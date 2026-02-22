@@ -89,3 +89,16 @@ python examples/peak_study.py \
   --channel dplus_kpipi \
   --plot
 ```
+
+## 7. Run staged combinations (composite candidates as tracks)
+
+```bash
+python examples/stepwise_decay_examples.py
+```
+
+This runs:
+- `J/psi(mu mu)` as a 2-body stage.
+- `Phi(KK)` as a 2-body stage.
+- `B -> J/psi K` and `B -> J/psi Phi` as second-stage combinations where the
+  intermediate candidates are converted to track-like objects with
+  `(x, y, tx, ty, z, cov4, time, sigma_time, source_track_ids)`.

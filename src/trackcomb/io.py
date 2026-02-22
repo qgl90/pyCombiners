@@ -19,6 +19,13 @@ def load_tracks_json(path: str | Path) -> list[TrackState]:
     for idx, item in enumerate(tracks_data):
         if not isinstance(item, dict):
             raise ValueError(f"Track entry at index {idx} must be an object.")
+        source_ids_raw = item.get("source_track_ids")
+        if source_ids_raw is None:
+            source_ids = (str(item["track_id"]),)
+        else:
+            if not isinstance(source_ids_raw, list):
+                raise ValueError("Track field 'source_track_ids' must be a list of strings.")
+            source_ids = tuple(str(x) for x in source_ids_raw)
         tracks.append(
             TrackState(
                 track_id=str(item["track_id"]),
@@ -40,6 +47,7 @@ def load_tracks_json(path: str | Path) -> list[TrackState]:
                 rich_dll_e=float(item.get("richDLL_e", 0.0)),
                 has_calo=bool(item.get("hasCALO", False)),
                 calo_dll_e=float(item.get("caloDLL_e", 0.0)),
+                source_track_ids=source_ids,
             )
         )
     return tracks
@@ -118,11 +126,19 @@ def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
     for res in results:
         row: dict[str, Any] = {
             "track_ids": ",".join(res.track_ids),
+            "source_track_ids": ",".join(res.source_track_ids),
             "masses": ",".join(str(x) for x in res.masses),
             "vertex_x": res.vertex_xyz[0],
             "vertex_y": res.vertex_xyz[1],
             "vertex_z": res.vertex_xyz[2],
+            "vertex_cov_xx": res.vertex_cov_xyz[0][0],
+            "vertex_cov_xy": res.vertex_cov_xyz[0][1],
+            "vertex_cov_xz": res.vertex_cov_xyz[0][2],
+            "vertex_cov_yy": res.vertex_cov_xyz[1][1],
+            "vertex_cov_yz": res.vertex_cov_xyz[1][2],
+            "vertex_cov_zz": res.vertex_cov_xyz[2][2],
             "vertex_time": res.vertex_time,
+            "vertex_sigma_time": res.vertex_sigma_time,
             "vertex_chi2": res.vertex_chi2,
             "vertex_time_chi2": res.vertex_time_chi2,
             "pair_time_chi2": res.pair_time_chi2,

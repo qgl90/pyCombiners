@@ -92,11 +92,11 @@ class ParticleCombiner:
         results: list[CombinationResult] = []
         for combo in iter_n_body_combinations(selected_tracks, n_body):
             combo_tracks = list(combo)
-            vertex_xyz, vertex_time, vertex_chi2, vertex_time_chi2 = fit_vertex_xyz_t(combo_tracks)
+            fit = fit_vertex_xyz_t(combo_tracks)
             pair_time_chi2 = pairwise_time_chi2(combo_tracks)
-            if cuts.max_vertex_chi2 is not None and vertex_chi2 > cuts.max_vertex_chi2:
+            if cuts.max_vertex_chi2 is not None and fit.spatial_chi2 > cuts.max_vertex_chi2:
                 continue
-            if cuts.max_vertex_time_chi2 is not None and vertex_time_chi2 > cuts.max_vertex_time_chi2:
+            if cuts.max_vertex_time_chi2 is not None and fit.time_chi2 > cuts.max_vertex_time_chi2:
                 continue
             if cuts.max_pair_time_chi2 is not None and pair_time_chi2 > cuts.max_pair_time_chi2:
                 continue
@@ -105,7 +105,7 @@ class ParticleCombiner:
             if cuts.max_doca is not None and any(v > cuts.max_doca for v in doca_pairs.values()):
                 continue
 
-            vertices_xy = tuple(t.extrapolate(vertex_xyz[2]) for t in combo_tracks)
+            vertices_xy = tuple(t.extrapolate(fit.vertex_xyz[2]) for t in combo_tracks)
             track_min_ip: dict[str, float] = {}
             track_min_ip_chi2: dict[str, float] = {}
             track_charges: dict[str, int] = {}
@@ -133,6 +133,13 @@ class ParticleCombiner:
             total_charge = sum(int(t.charge) for t in combo_tracks)
             if cuts.allowed_charge_patterns is not None and charge_pattern not in cuts.allowed_charge_patterns:
                 continue
+            source_track_ids: list[str] = []
+            for t in combo_tracks:
+                if t.source_track_ids:
+                    source_track_ids.extend(t.source_track_ids)
+                else:
+                    source_track_ids.append(t.track_id)
+            source_track_ids = list(dict.fromkeys(source_track_ids))
 
             for masses in valid_hypotheses:
                 p4 = sum_lorentz(
@@ -158,12 +165,14 @@ class ParticleCombiner:
                     CombinationResult(
                         track_ids=tuple(t.track_id for t in combo_tracks),
                         masses=tuple(masses),
-                        vertex_xyz=vertex_xyz,
-                        vertex_time=vertex_time,
+                        vertex_xyz=fit.vertex_xyz,
+                        vertex_cov_xyz=fit.cov_xyz,
+                        vertex_time=fit.vertex_time,
+                        vertex_sigma_time=fit.sigma_time,
                         vertices_xy=vertices_xy,
                         candidate_p4=p4,
-                        vertex_chi2=vertex_chi2,
-                        vertex_time_chi2=vertex_time_chi2,
+                        vertex_chi2=fit.spatial_chi2,
+                        vertex_time_chi2=fit.time_chi2,
                         pair_time_chi2=pair_time_chi2,
                         doca_pairs=doca_pairs,
                         track_min_ip=track_min_ip,
@@ -174,6 +183,7 @@ class ParticleCombiner:
                         total_charge=total_charge,
                         pair_pt=pair_pt,
                         pair_eta=pair_eta,
+                        source_track_ids=tuple(source_track_ids),
                         best_pv_id=best_pv_id,
                     )
                 )

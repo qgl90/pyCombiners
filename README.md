@@ -12,6 +12,10 @@ Event-level particle-combination framework for track containers and PV container
   - `hasCALO`, `caloDLL_e`
 - `PrimaryVertex`: `pv_id, x, y, z, cov3, time, sigma_time`
 - `ParticleCombiner`: builds 2/3/4-body combinations from tracks
+- Hierarchical/staged combinations via `combination_to_track_state(...)`:
+  - treat accepted combination outputs as new track-like objects
+  - preserve source-track provenance (`source_track_ids`)
+  - reuse them in higher-level decay chains
 - 4D vertexing: fit `(x, y, z, time)` per candidate
 - Pair/candidate metrics: DOCA, vertex chi2, mass, pair `pT`, pair `eta`, timing chi2
 - Track preselection: `pT`, `eta`, minimum IP wrt all PVs in event
@@ -79,9 +83,22 @@ results = combiner.combine(
 )
 ```
 
+## Stepwise Decay Chains (Composite -> Track Abstraction)
+
+Example script:
+- `/Users/renato/Documents/New project/pyCombiners/examples/stepwise_decay_examples.py`
+
+This demonstrates:
+1. `J/psi -> mu mu` (2-body)
+2. Convert accepted `J/psi` candidates to track-like composites
+3. Build `B -> J/psi K` by combining composite `J/psi` with kaon tracks
+4. Build `Phi -> K K`, convert to composite tracks
+5. Build `B -> J/psi Phi` from two composite candidates
+
 ## Output Fields (Per Combination)
 
 - `vertex_xyz`, `vertex_time`
+- `vertex_cov_xyz`, `vertex_sigma_time`
 - `vertex_chi2`, `vertex_time_chi2`, `pair_time_chi2`
 - `doca_pairs` (`doca12`, `doca13`, ...)
 - `candidate_p4` (`px,py,pz,e,mass`)
@@ -89,6 +106,7 @@ results = combiner.combine(
 - `track_min_ip`, `track_min_ip_chi2`
 - `track_pid_info` (RICH/CALO fields propagated from input tracks)
 - `charge_pattern`, `total_charge`
+- `source_track_ids` (provenance of original input tracks)
 - `best_pv_id`
 
 Output is written as a tabular file based on extension:

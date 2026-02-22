@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from typing import Iterable
 
-from .models import LorentzVector, PrimaryVertex, TrackState
+from .models import LorentzVector, Matrix3x3, PrimaryVertex, TrackState
+
+
+@dataclass(frozen=True)
+class VertexFitResult:
+    """Container for combined spatial/time vertex fit outputs."""
+
+    vertex_xyz: tuple[float, float, float]
+    vertex_time: float
+    spatial_chi2: float
+    time_chi2: float
+    cov_xyz: Matrix3x3
+    sigma_time: float
 
 
 def track_to_lorentz(track: TrackState, mass: float) -> LorentzVector:
@@ -46,16 +59,30 @@ def pairwise_time_chi2(tracks: list[TrackState]) -> float:
     return chi2 / n_pairs if n_pairs else 0.0
 
 
-def fit_vertex_xyz_t(tracks: list[TrackState]) -> tuple[tuple[float, float, float], float, float, float]:
+def fit_vertex_xyz_t(tracks: list[TrackState]) -> VertexFitResult:
     """
     Least-squares vertex in (x,y,z) from line equations and weighted time average.
-    Returns: (vertex_xyz, vertex_time, spatial_chi2, time_chi2)
+    Returns a `VertexFitResult` including fitted covariance and time uncertainty.
     """
     if not tracks:
-        return (0.0, 0.0, 0.0), 0.0, 0.0, 0.0
+        return VertexFitResult(
+            vertex_xyz=(0.0, 0.0, 0.0),
+            vertex_time=0.0,
+            spatial_chi2=0.0,
+            time_chi2=0.0,
+            cov_xyz=((1e6, 0.0, 0.0), (0.0, 1e6, 0.0), (0.0, 0.0, 1e6)),
+            sigma_time=1e3,
+        )
     if len(tracks) == 1:
         t = tracks[0]
-        return (t.x, t.y, t.z), t.time, 0.0, 0.0
+        return VertexFitResult(
+            vertex_xyz=(t.x, t.y, t.z),
+            vertex_time=t.time,
+            spatial_chi2=0.0,
+            time_chi2=0.0,
+            cov_xyz=((t.cov4[0][0], t.cov4[0][1], 0.0), (t.cov4[1][0], t.cov4[1][1], 0.0), (0.0, 0.0, 1e6)),
+            sigma_time=t.sigma_time,
+        )
 
     # Normal equations for unknowns [x_v, y_v, z_v]
     ata = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
@@ -71,8 +98,11 @@ def fit_vertex_xyz_t(tracks: list[TrackState]) -> tuple[tuple[float, float, floa
                 for j in range(3):
                     ata[i][j] += a[i] * a[j]
     xyz = solve_3x3(ata, atb)
+    cov_xyz = invert_3x3(ata)
     if xyz is None:
         xyz = (sum(t.x for t in tracks) / len(tracks), sum(t.y for t in tracks) / len(tracks), sum(t.z for t in tracks) / len(tracks))
+    if cov_xyz is None:
+        cov_xyz = ((1e6, 0.0, 0.0), (0.0, 1e6, 0.0), (0.0, 0.0, 1e6))
     x_v, y_v, z_v = xyz
 
     spatial_chi2 = 0.0
@@ -97,6 +127,7 @@ def fit_vertex_xyz_t(tracks: list[TrackState]) -> tuple[tuple[float, float, floa
         sum_w += w
         sum_wt += w * t.time
     t_v = sum_wt / sum_w if sum_w > 0.0 else sum(t.time for t in tracks) / len(tracks)
+    sigma_t_v = (1.0 / sum_w) ** 0.5 if sum_w > 0.0 else 1e3
     time_chi2 = 0.0
     for t in tracks:
         if t.sigma_time <= 0.0:
@@ -104,7 +135,14 @@ def fit_vertex_xyz_t(tracks: list[TrackState]) -> tuple[tuple[float, float, floa
         dt = t.time - t_v
         time_chi2 += (dt * dt) / (t.sigma_time * t.sigma_time)
 
-    return (x_v, y_v, z_v), t_v, spatial_chi2, time_chi2
+    return VertexFitResult(
+        vertex_xyz=(x_v, y_v, z_v),
+        vertex_time=t_v,
+        spatial_chi2=spatial_chi2,
+        time_chi2=time_chi2,
+        cov_xyz=cov_xyz,
+        sigma_time=sigma_t_v,
+    )
 
 
 def pairwise_doca(tracks: list[TrackState]) -> dict[str, float]:
@@ -224,6 +262,32 @@ def solve_3x3(a: list[list[float]], b: list[float]) -> tuple[float, float, float
             for j in range(col, n + 1):
                 m[r][j] -= factor * m[col][j]
     return m[0][3], m[1][3], m[2][3]
+
+
+def invert_3x3(a: list[list[float]]) -> Matrix3x3 | None:
+    """Invert 3x3 matrix by Gaussian elimination."""
+    m = [row[:] + [1.0 if i == j else 0.0 for j in range(3)] for i, row in enumerate(a)]
+    n = 3
+    for col in range(n):
+        pivot = max(range(col, n), key=lambda r: abs(m[r][col]))
+        if abs(m[pivot][col]) < 1e-14:
+            return None
+        if pivot != col:
+            m[col], m[pivot] = m[pivot], m[col]
+        p = m[col][col]
+        for j in range(col, 2 * n):
+            m[col][j] /= p
+        for r in range(n):
+            if r == col:
+                continue
+            factor = m[r][col]
+            for j in range(col, 2 * n):
+                m[r][j] -= factor * m[col][j]
+    return (
+        (m[0][3], m[0][4], m[0][5]),
+        (m[1][3], m[1][4], m[1][5]),
+        (m[2][3], m[2][4], m[2][5]),
+    )
 
 
 def dot3(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:

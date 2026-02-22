@@ -89,11 +89,11 @@ class TestCombinerOperations(unittest.TestCase):
             TrackState("a", z=0.0, x=0.0, y=0.0, tx=0.0, ty=0.0, time=1.0, cov4=self._cov4(), sigma_time=0.1, p=1.0),
             TrackState("b", z=0.0, x=1.0, y=0.0, tx=0.0, ty=0.0, time=1.2, cov4=self._cov4(), sigma_time=0.1, p=1.0),
         ]
-        xyz, t, _, _ = fit_vertex_xyz_t(tracks)
-        self.assertAlmostEqual(xyz[0], 0.5, places=12)
-        self.assertAlmostEqual(xyz[1], 0.0, places=12)
-        self.assertAlmostEqual(xyz[2], 0.0, places=12)
-        self.assertAlmostEqual(t, 1.1, places=12)
+        fit = fit_vertex_xyz_t(tracks)
+        self.assertAlmostEqual(fit.vertex_xyz[0], 0.5, places=12)
+        self.assertAlmostEqual(fit.vertex_xyz[1], 0.0, places=12)
+        self.assertAlmostEqual(fit.vertex_xyz[2], 0.0, places=12)
+        self.assertAlmostEqual(fit.vertex_time, 1.1, places=12)
 
     def test_invalid_mass_hypothesis_length_raises(self) -> None:
         """Invalid mass hypothesis size must raise a ValueError."""

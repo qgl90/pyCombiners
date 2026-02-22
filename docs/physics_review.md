@@ -13,6 +13,8 @@ This note reviews the current track vertexing and n-body combination logic for o
 - Event-level PV list and per-track min-IP vs PVs.
 - Charge-pattern filtering for 2-body and 3-body combinations.
 - Analysis-ready tabular output (parquet/csv/pkl) with flattened per-track features.
+- Staged-combination abstraction: intermediate resonances can be converted into
+  track-like composites and reused in higher-level decays.
 
 ## Important caveats (math/logic)
 
@@ -32,6 +34,12 @@ This note reviews the current track vertexing and n-body combination logic for o
 
 4. Candidate-PV association is voting-based from track min-IP.
    - Good pragmatic default, but for high pile-up events, consider selecting PV by best candidate-level pointing/FD significance.
+
+5. Composite-track covariance is approximate in staged workflows.
+   - Composite `cov4` uses fitted vertex covariance for x/y and heuristic slope
+     covariance mixing from constituents.
+   - For precision measurements, propagate full covariance through the full
+     decay-chain fit (or refit the full chain jointly).
 
 ## Suggested cut strategy (starting point)
 

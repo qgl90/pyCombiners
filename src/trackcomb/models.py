@@ -52,6 +52,7 @@ class TrackState:
     rich_dll_e: float = 0.0
     has_calo: bool = False
     calo_dll_e: float = 0.0
+    source_track_ids: tuple[str, ...] = ()
 
     def extrapolate(self, z_target: float) -> tuple[float, float]:
         """Linearly extrapolate x/y to a target z coordinate."""
@@ -145,7 +146,9 @@ class CombinationResult:
     track_ids: tuple[str, ...]
     masses: tuple[float, ...]
     vertex_xyz: tuple[float, float, float]
+    vertex_cov_xyz: Matrix3x3
     vertex_time: float
+    vertex_sigma_time: float
     vertices_xy: tuple[tuple[float, float], ...]
     candidate_p4: LorentzVector
     vertex_chi2: float
@@ -160,6 +163,7 @@ class CombinationResult:
     total_charge: int
     pair_pt: float
     pair_eta: float
+    source_track_ids: tuple[str, ...]
     best_pv_id: str | None = None
 
 
