@@ -1,0 +1,30 @@
+stages:
+  - test
+
+default:
+  image: python:3.11
+  cache:
+    key: "$CI_COMMIT_REF_SLUG"
+    paths:
+      - .cache/pip
+  before_script:
+    - python --version
+    - pip install --upgrade pip
+    - pip install -e .
+
+unit_tests:
+  stage: test
+  script:
+    - PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+cli_smoke_test:
+  stage: test
+  script:
+    - track-combiner --tracks examples/tracks.json --primary-vertices examples/primary_vertex.json --masses examples/masses_2body.json --n-body 2 --out output_ci_smoke.parquet
+    - test -s output_ci_smoke.parquet
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'

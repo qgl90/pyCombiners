@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.DS_Store
+output_*.json
+output_*.parquet
+output_*.csv
+output_*.pkl
+analysis_table.csv
+summary.json
+top_candidates.json
+selected_candidates.json
