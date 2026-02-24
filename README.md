@@ -47,6 +47,13 @@ Plain local script (no installation):
 PYTHONPATH=src python examples/multi_event_api.py
 ```
 
+Documentation webpage (local):
+
+```bash
+python3 -m http.server 8080 --directory docs/web
+# open http://localhost:8080
+```
+
 ## CLI Example With Cuts
 
 ```bash
@@ -128,6 +135,20 @@ This demonstrates:
 4. Build `Phi -> K K`, convert to composite tracks
 5. Build `B -> J/psi Phi` from two composite candidates
 
+## Write Your Own Channel Script (Template)
+
+Template script:
+- `/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py`
+
+Run:
+
+```bash
+PYTHONPATH=src python3 examples/new_decay_channel_template.py \
+  --input-events examples/events.json \
+  --output examples/custom_channel_output.parquet \
+  --channel dplus_kpipi
+```
+
 ## Output Fields (Per Combination)
 
 - `vertex_xyz`, `vertex_time`
@@ -152,9 +173,11 @@ Output is written as a tabular file based on extension:
 ## Examples and Tutorial
 
 - Mini tutorial: `/Users/renato/Documents/New project/pyCombiners/docs/mini_tutorial.md`
+- Docs webpage: `/Users/renato/Documents/New project/pyCombiners/docs/web/index.html`
 - Table inspection helper: `/Users/renato/Documents/New project/pyCombiners/examples/inspect_table.py`
 - Peak/SB study helper: `/Users/renato/Documents/New project/pyCombiners/examples/peak_study.py`
 - Multi-event API example: `/Users/renato/Documents/New project/pyCombiners/examples/multi_event_api.py`
+- New channel template: `/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py`
 - Physics review notes: `/Users/renato/Documents/New project/pyCombiners/docs/physics_review.md`
 - Custom scripts:
   - `/Users/renato/Documents/New project/pyCombiners/examples/custom_analysis.py`

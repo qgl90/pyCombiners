@@ -1,5 +1,13 @@
 # Mini Tutorial
 
+## 0. Open the docs webpage
+
+```bash
+python3 -m http.server 8080 --directory docs/web
+```
+
+Open: `http://localhost:8080`
+
 ## 1. Run directly from source (no install)
 
 ```bash
@@ -153,3 +161,15 @@ This runs:
 - `B -> J/psi K` and `B -> J/psi Phi` as second-stage combinations where the
   intermediate candidates are converted to track-like objects with
   `(x, y, tx, ty, z, cov4, time, sigma_time, source_track_ids)`.
+
+## 10. Start from the new-channel template script
+
+```bash
+PYTHONPATH=src python3 examples/new_decay_channel_template.py \
+  --input-events examples/events.json \
+  --output examples/custom_channel_output.parquet \
+  --channel dplus_kpipi
+```
+
+To adapt a different input format, add `--raw-schema` and edit:
+- `map_raw_event_to_event_input` in `examples/new_decay_channel_template.py`

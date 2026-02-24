@@ -35,6 +35,12 @@ This folder provides runnable scripts and sample input data for common workflows
   - Demonstrates `ParticleCombiner.combine_events(...)` with `make_pion/make_kaon` hypotheses.
   - Writes a parquet table tagged with `event_id`.
 
+- `new_decay_channel_template.py`
+  - Step-by-step template to:
+    - adapt custom input format into `EventInput`
+    - run a direct 3-body channel (`D+ -> K pi pi`)
+    - run a staged channel (`B -> J/psi(mu mu) K`).
+
 - `custom_analysis.py`
   - Minimal example custom callback to post-process results.
 

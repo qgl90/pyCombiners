@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>pyCombiners Docs Webpage</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="hero">
+      <div class="hero-pattern"></div>
+      <nav class="top-nav">
+        <a href="#overview">Overview</a>
+        <a href="#start">Start</a>
+        <a href="#step-by-step">Step by Step</a>
+        <a href="#custom-input">Custom Input</a>
+        <a href="#examples">Examples</a>
+      </nav>
+      <div class="hero-content reveal">
+        <p class="eyebrow">Track Combination Framework</p>
+        <h1>pyCombiners Web Guide</h1>
+        <p>
+          Practical walkthrough for adapting new event inputs and building your
+          own decay-channel combiners with repeatable, analysis-ready output.
+        </p>
+        <div class="hero-actions">
+          <a class="button" href="#step-by-step">Build a New Channel</a>
+          <a class="button ghost" href="#custom-input">Adapt Input Format</a>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section id="overview" class="panel reveal">
+        <h2>Framework Map</h2>
+        <div class="grid-three">
+          <article class="card">
+            <h3>Data Models</h3>
+            <p>
+              <code>TrackState</code>, <code>PrimaryVertex</code>, and
+              <code>EventInput</code> are the core event objects consumed by
+              combiners.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/src/trackcomb/models.py</p>
+          </article>
+          <article class="card">
+            <h3>Combiner Engine</h3>
+            <p>
+              <code>ParticleCombiner.combine</code> and
+              <code>ParticleCombiner.combine_events</code> build filtered
+              2/3/4-body candidates.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/src/trackcomb/combiner.py</p>
+          </article>
+          <article class="card">
+            <h3>Physics Helpers</h3>
+            <p>
+              Vertexing, DOCA, and beta-corrected time propagation are handled
+              in one place.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/src/trackcomb/physics.py</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="start" class="panel reveal">
+        <h2>Start Local Docs + Local Scripts</h2>
+        <p>
+          Run this docs webpage locally, then execute scripts without package
+          installation.
+        </p>
+        <pre><code>cd /Users/renato/Documents/New project/pyCombiners
+python3 -m http.server 8080 --directory docs/web
+# open http://localhost:8080
+
+PYTHONPATH=src python3 examples/new_decay_channel_template.py \
+  --input-events YOUR_INPUT.json \
+  --output ./output_candidates.parquet \
+  --channel dplus_kpipi</code></pre>
+      </section>
+
+      <section id="step-by-step" class="panel reveal">
+        <h2>Step by Step: Build a New Decay Channel</h2>
+        <ol>
+          <li>
+            Define your event input adapter so each event returns
+            <code>EventInput(event_id, tracks, primary_vertices)</code>.
+          </li>
+          <li>
+            Build track-level preselection with
+            <code>TrackPreselection(min_pt, min_eta, max_eta, min_ip_to_any_pv)</code>.
+          </li>
+          <li>
+            Choose mass hypotheses with helpers:
+            <code>make_pion()</code>, <code>make_kaon()</code>,
+            <code>make_proton()</code>, <code>make_muon()</code>,
+            <code>make_electron()</code>.
+          </li>
+          <li>
+            Build candidate cuts using <code>CombinationCuts</code>:
+            <code>max_doca</code>, <code>max_vertex_chi2</code>,
+            <code>max_pair_time_chi2</code>, mass/pt/eta windows, and allowed
+            charge patterns.
+          </li>
+          <li>
+            Run <code>combine_events</code> and write a parquet table for
+            offline inspection.
+          </li>
+        </ol>
+        <pre><code>from trackcomb import (
+    CombinationCuts,
+    ParticleCombiner,
+    TrackPreselection,
+    make_kaon,
+    make_pion,
+)
+
+combiner = ParticleCombiner()
+
+results = combiner.combine_events(
+    events=events,
+    n_body=3,
+    mass_hypotheses=[[make_kaon(), make_pion(), make_pion()]],
+    preselection=TrackPreselection(min_pt=0.5, min_ip_to_any_pv=0.05),
+    cuts=CombinationCuts(
+        allowed_charge_patterns=("-++", "+--"),
+        max_doca=1.0,
+        max_vertex_chi2=60.0,
+        max_pair_time_chi2=15.0,
+        min_mass=1.80,
+        max_mass=1.94,
+    ),
+)</code></pre>
+      </section>
+
+      <section id="custom-input" class="panel reveal">
+        <h2>Adapt a New Input Loading Format</h2>
+        <p>
+          Keep this rule: your adapter must emit framework objects, even if your
+          input schema is different.
+        </p>
+        <pre><code>from trackcomb import EventInput, PrimaryVertex, TrackState
+
+def map_raw_event(raw_event) -> EventInput:
+    tracks = []
+    for trk in raw_event["my_tracks"]:
+        tracks.append(
+            TrackState(
+                track_id=str(trk["id"]),
+                z=float(trk["z0"]),
+                x=float(trk["state"][0]),
+                y=float(trk["state"][1]),
+                tx=float(trk["state"][2]),
+                ty=float(trk["state"][3]),
+                time=float(trk["time_ns"]),
+                cov4=tuple(tuple(float(v) for v in row) for row in trk["cov4"]),
+                sigma_time=float(trk["sigma_time_ns"]),
+                p=float(trk["p_gev"]),
+                charge=int(trk["q"]),
+            )
+        )
+
+    pvs = []
+    for i, pv in enumerate(raw_event["my_pvs"]):
+        pvs.append(
+            PrimaryVertex(
+                pv_id=str(pv.get("id", f"pv{i}")),
+                x=float(pv["x"]),
+                y=float(pv["y"]),
+                z=float(pv["z"]),
+                cov3=tuple(tuple(float(v) for v in row) for row in pv["cov3"]),
+                time=float(pv["time_ns"]),
+                sigma_time=float(pv["sigma_time_ns"]),
+            )
+        )
+
+    return EventInput(
+        event_id=str(raw_event["event_number"]),
+        tracks=tuple(tracks),
+        primary_vertices=tuple(pvs),
+    )</code></pre>
+      </section>
+
+      <section id="examples" class="panel reveal">
+        <h2>Example Workflows</h2>
+        <div class="grid-two">
+          <article class="card">
+            <h3>Template for New Channels</h3>
+            <p>
+              End-to-end template with direct and staged decay-channel examples.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py</p>
+          </article>
+          <article class="card">
+            <h3>Staged Composite Workflow</h3>
+            <p>
+              Reuse 2-body candidates as track-like objects for higher-level
+              decays (B to J/psi K, B to J/psi Phi).
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/examples/stepwise_decay_examples.py</p>
+          </article>
+          <article class="card">
+            <h3>Multi-event API</h3>
+            <p>
+              Minimal event-batch run with named mass hypotheses and parquet
+              output.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/examples/multi_event_api.py</p>
+          </article>
+          <article class="card">
+            <h3>Mass-Peak Studies</h3>
+            <p>
+              Sideband signal/background estimation for channels like
+              <code>Ks -&gt; pi pi</code> and <code>D -&gt; K pi pi</code>.
+            </p>
+            <p class="file-ref">/Users/renato/Documents/New project/pyCombiners/examples/peak_study.py</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="notes" class="panel reveal">
+        <h2>Important Notes</h2>
+        <ul>
+          <li>
+            Time chi2 uses mass-dependent beta correction to propagate track time
+            to the fitted vertex.
+          </li>
+          <li>
+            Candidate rows include <code>event_id</code>,
+            <code>particle_hypotheses</code>, charge pattern, DOCA, and IP
+            metrics.
+          </li>
+          <li>
+            Parquet output requires <code>pandas</code> and
+            <code>pyarrow</code>.
+          </li>
+        </ul>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        pyCombiners docs webpage • keep this page versioned with code changes.
+      </p>
+    </footer>
+
+    <script src="./web.js"></script>
+  </body>
+</html>
