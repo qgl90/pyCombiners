@@ -41,6 +41,18 @@ This folder provides runnable scripts and sample input data for common workflows
     - run a direct 3-body channel (`D+ -> K pi pi`)
     - run a staged channel (`B -> J/psi(mu mu) K`).
 
+- `b_jpsi_kstar_fake_and_combine.py`
+  - End-to-end synthetic walkthrough for:
+    - 1000-event fake dataset generation
+    - 20% truth `B -> J/psi(mu mu) K*(K pi)` injection
+    - staged combiners producing pandas output table.
+
+- `b_jpsi_kstar_study.py`
+  - pandas/matplotlib study script for staged output:
+    - `J/psi`, `K*`, and `B` mass distributions
+    - B-window summary in `5000-6000 MeV`
+    - truth/background overlays.
+
 - `custom_analysis.py`
   - Minimal example custom callback to post-process results.
 

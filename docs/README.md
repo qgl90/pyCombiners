@@ -12,6 +12,12 @@ This folder contains human-oriented documentation for framework usage and physic
   - Technical review of current vertexing/combination logic, caveats, and recommended cut strategies.
   - Focused on resonance studies such as `K_S -> pi pi` and `D -> K pi pi`.
 
+- `b_jpsi_kstar_walkthrough.md`
+  - Full synthetic example for `B -> J/psi(mu mu) K*(K pi)` with:
+    - 1000 events
+    - 20% truth signal
+    - staged combiner output and mass-study plotting workflow.
+
 - `web/`
   - Static docs webpage for interactive, sectioned reading.
   - Includes a step-by-step workflow for adapting new input schemas and writing

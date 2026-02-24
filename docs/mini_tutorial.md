@@ -173,3 +173,29 @@ PYTHONPATH=src python3 examples/new_decay_channel_template.py \
 
 To adapt a different input format, add `--raw-schema` and edit:
 - `map_raw_event_to_event_input` in `examples/new_decay_channel_template.py`
+
+## 11. Full B -> J/psi K* synthetic walkthrough (1000 events, 20% signal)
+
+Generate + combine:
+
+```bash
+PYTHONPATH=src python3 examples/b_jpsi_kstar_fake_and_combine.py \
+  --n-events 1000 \
+  --signal-fraction 0.20 \
+  --out-events examples/output_bjpsikstar_events.json \
+  --out-truth examples/output_bjpsikstar_truth.json \
+  --out-candidates examples/output_bjpsikstar_candidates.parquet
+```
+
+Study output with pandas/plots:
+
+```bash
+python3 examples/b_jpsi_kstar_study.py \
+  --input examples/output_bjpsikstar_candidates.parquet \
+  --out-dir examples/output_bjpsikstar_study \
+  --b-min-mev 5000 \
+  --b-max-mev 6000
+```
+
+Detailed notes:
+- `docs/b_jpsi_kstar_walkthrough.md`

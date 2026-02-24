@@ -149,6 +149,21 @@ PYTHONPATH=src python3 examples/new_decay_channel_template.py \
   --channel dplus_kpipi
 ```
 
+Synthetic B walkthrough:
+
+```bash
+PYTHONPATH=src python3 examples/b_jpsi_kstar_fake_and_combine.py \
+  --n-events 1000 \
+  --signal-fraction 0.20 \
+  --out-candidates examples/output_bjpsikstar_candidates.parquet
+
+python3 examples/b_jpsi_kstar_study.py \
+  --input examples/output_bjpsikstar_candidates.parquet \
+  --out-dir examples/output_bjpsikstar_study \
+  --b-min-mev 5000 \
+  --b-max-mev 6000
+```
+
 ## Output Fields (Per Combination)
 
 - `vertex_xyz`, `vertex_time`
@@ -174,10 +189,14 @@ Output is written as a tabular file based on extension:
 
 - Mini tutorial: `/Users/renato/Documents/New project/pyCombiners/docs/mini_tutorial.md`
 - Docs webpage: `/Users/renato/Documents/New project/pyCombiners/docs/web/index.html`
+- B walkthrough: `/Users/renato/Documents/New project/pyCombiners/docs/b_jpsi_kstar_walkthrough.md`
 - Table inspection helper: `/Users/renato/Documents/New project/pyCombiners/examples/inspect_table.py`
 - Peak/SB study helper: `/Users/renato/Documents/New project/pyCombiners/examples/peak_study.py`
 - Multi-event API example: `/Users/renato/Documents/New project/pyCombiners/examples/multi_event_api.py`
 - New channel template: `/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py`
+- B walkthrough scripts:
+  - `/Users/renato/Documents/New project/pyCombiners/examples/b_jpsi_kstar_fake_and_combine.py`
+  - `/Users/renato/Documents/New project/pyCombiners/examples/b_jpsi_kstar_study.py`
 - Physics review notes: `/Users/renato/Documents/New project/pyCombiners/docs/physics_review.md`
 - Custom scripts:
   - `/Users/renato/Documents/New project/pyCombiners/examples/custom_analysis.py`
