@@ -187,3 +187,4 @@ Output is written as a tabular file based on extension:
 ## CI (GitLab)
 
 - Pipeline: `/Users/renato/Documents/New project/pyCombiners/.gitlab-ci.yml`
+- GitHub Actions: `/Users/renato/Documents/New project/pyCombiners/.github/workflows/ci.yml`
