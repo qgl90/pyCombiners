@@ -2,6 +2,8 @@
 
 This module defines:
 - immutable physics objects (`TrackState`, `PrimaryVertex`, `LorentzVector`)
+- event containers (`EventInput`)
+- particle-mass assignment objects (`ParticleHypothesis`)
 - combination outputs (`CombinationResult`)
 - configurable filtering controls (`TrackPreselection`, `CombinationCuts`)
 - helper iterator for n-body combinatorics.
@@ -105,6 +107,24 @@ class PrimaryVertex:
 
 
 @dataclass(frozen=True)
+class EventInput:
+    """One event payload with its own track list and primary-vertex list."""
+
+    event_id: str
+    tracks: tuple[TrackState, ...]
+    primary_vertices: tuple[PrimaryVertex, ...]
+
+
+@dataclass(frozen=True)
+class ParticleHypothesis:
+    """Named particle hypothesis used to derive mass-dependent observables."""
+
+    name: str
+    mass: float
+    pdg_id: int | None = None
+
+
+@dataclass(frozen=True)
 class LorentzVector:
     """Simple 4-vector with convenience properties and addition."""
 
@@ -145,6 +165,7 @@ class CombinationResult:
 
     track_ids: tuple[str, ...]
     masses: tuple[float, ...]
+    particle_hypotheses: tuple[str, ...]
     vertex_xyz: tuple[float, float, float]
     vertex_cov_xyz: Matrix3x3
     vertex_time: float
@@ -164,6 +185,7 @@ class CombinationResult:
     pair_pt: float
     pair_eta: float
     source_track_ids: tuple[str, ...]
+    event_id: str | None = None
     best_pv_id: str | None = None
 
 

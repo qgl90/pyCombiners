@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from .models import LorentzVector, Matrix3x3, PrimaryVertex, TrackState
+
+C_LIGHT_MM_PER_NS = 299.792458
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,16 @@ class VertexFitResult:
     time_chi2: float
     cov_xyz: Matrix3x3
     sigma_time: float
+
+
+@dataclass(frozen=True)
+class VertexTimeFitResult:
+    """Container for mass-dependent vertex-time fit outputs."""
+
+    vertex_time: float
+    sigma_time: float
+    chi2: float
+    propagated_times: tuple[float, ...]
 
 
 def track_to_lorentz(track: TrackState, mass: float) -> LorentzVector:
@@ -39,15 +51,42 @@ def sum_lorentz(vectors: Iterable[LorentzVector]) -> LorentzVector:
     return total
 
 
-def pairwise_time_chi2(tracks: list[TrackState]) -> float:
-    """Average pairwise time chi2 over all unique track pairs."""
+def pairwise_time_chi2(
+    tracks: list[TrackState],
+    masses: Sequence[float] | None = None,
+    vertex_xyz: tuple[float, float, float] | None = None,
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> float:
+    """Average pairwise time chi2 over all unique track pairs.
+
+    If `masses` and `vertex_xyz` are provided, each track time is first
+    propagated to the vertex with a mass-dependent beta correction.
+    """
     if len(tracks) <= 1:
         return 0.0
+    if (masses is None) != (vertex_xyz is None):
+        raise ValueError("Provide both masses and vertex_xyz, or neither.")
+    if masses is not None and len(masses) != len(tracks):
+        raise ValueError("Mass list length must match track multiplicity.")
+    if masses is None:
+        times = [t.time for t in tracks]
+    else:
+        assert vertex_xyz is not None
+        times = [
+            propagate_track_time_to_vertex(
+                track=t,
+                mass=mass,
+                vertex_xyz=vertex_xyz,
+                speed_of_light=speed_of_light,
+            )
+            for t, mass in zip(tracks, masses, strict=True)
+        ]
+
     chi2 = 0.0
     n_pairs = 0
     for i in range(len(tracks)):
         for j in range(i + 1, len(tracks)):
-            dt = tracks[i].time - tracks[j].time
+            dt = times[i] - times[j]
             sigma2 = (
                 tracks[i].sigma_time * tracks[i].sigma_time
                 + tracks[j].sigma_time * tracks[j].sigma_time
@@ -59,29 +98,53 @@ def pairwise_time_chi2(tracks: list[TrackState]) -> float:
     return chi2 / n_pairs if n_pairs else 0.0
 
 
-def fit_vertex_xyz_t(tracks: list[TrackState]) -> VertexFitResult:
+def fit_vertex_xyz_t(
+    tracks: list[TrackState],
+    masses: Sequence[float] | None = None,
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> VertexFitResult:
     """
-    Least-squares vertex in (x,y,z) from line equations and weighted time average.
-    Returns a `VertexFitResult` including fitted covariance and time uncertainty.
+    Least-squares vertex in `(x,y,z)` plus mass-corrected time fit.
+
+    Spatial coordinates are solved from line equations, while vertex time uses
+    per-track times propagated to the fitted vertex via
+    `beta = p / sqrt(p^2 + m^2)`. If `masses` is not provided, zero masses are
+    used (ultra-relativistic approximation).
     """
+    if masses is not None and len(masses) != len(tracks):
+        raise ValueError("Mass list length must match track multiplicity.")
+    mass_values = [0.0] * len(tracks) if masses is None else [float(m) for m in masses]
+
     if not tracks:
+        time_fit = fit_vertex_time(
+            tracks=[],
+            masses=[],
+            vertex_xyz=(0.0, 0.0, 0.0),
+            speed_of_light=speed_of_light,
+        )
         return VertexFitResult(
             vertex_xyz=(0.0, 0.0, 0.0),
-            vertex_time=0.0,
+            vertex_time=time_fit.vertex_time,
             spatial_chi2=0.0,
-            time_chi2=0.0,
+            time_chi2=time_fit.chi2,
             cov_xyz=((1e6, 0.0, 0.0), (0.0, 1e6, 0.0), (0.0, 0.0, 1e6)),
-            sigma_time=1e3,
+            sigma_time=time_fit.sigma_time,
         )
     if len(tracks) == 1:
         t = tracks[0]
+        time_fit = fit_vertex_time(
+            tracks=tracks,
+            masses=mass_values,
+            vertex_xyz=(t.x, t.y, t.z),
+            speed_of_light=speed_of_light,
+        )
         return VertexFitResult(
             vertex_xyz=(t.x, t.y, t.z),
-            vertex_time=t.time,
+            vertex_time=time_fit.vertex_time,
             spatial_chi2=0.0,
-            time_chi2=0.0,
+            time_chi2=time_fit.chi2,
             cov_xyz=((t.cov4[0][0], t.cov4[0][1], 0.0), (t.cov4[1][0], t.cov4[1][1], 0.0), (0.0, 0.0, 1e6)),
-            sigma_time=t.sigma_time,
+            sigma_time=time_fit.sigma_time,
         )
 
     # Normal equations for unknowns [x_v, y_v, z_v]
@@ -107,6 +170,8 @@ def fit_vertex_xyz_t(tracks: list[TrackState]) -> VertexFitResult:
 
     spatial_chi2 = 0.0
     for t in tracks:
+        # Evaluate residuals in the transverse plane at the fitted z and weight
+        # them with the propagated 2x2 measurement covariance.
         (x_t, y_t), cov_xy = t.extrapolate_xy_cov(z_v)
         inv = invert_2x2(cov_xy)
         dx = x_t - x_v
@@ -118,31 +183,116 @@ def fit_vertex_xyz_t(tracks: list[TrackState]) -> VertexFitResult:
                 inv[1][0] * dx + inv[1][1] * dy
             )
 
+    time_fit = fit_vertex_time(
+        tracks=tracks,
+        masses=mass_values,
+        vertex_xyz=(x_v, y_v, z_v),
+        speed_of_light=speed_of_light,
+    )
+
+    return VertexFitResult(
+        vertex_xyz=(x_v, y_v, z_v),
+        vertex_time=time_fit.vertex_time,
+        spatial_chi2=spatial_chi2,
+        time_chi2=time_fit.chi2,
+        cov_xyz=cov_xyz,
+        sigma_time=time_fit.sigma_time,
+    )
+
+
+def fit_vertex_time(
+    tracks: Sequence[TrackState],
+    masses: Sequence[float],
+    vertex_xyz: tuple[float, float, float],
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> VertexTimeFitResult:
+    """Fit candidate time from mass-corrected track times at the fitted vertex."""
+    if not tracks:
+        return VertexTimeFitResult(
+            vertex_time=0.0,
+            sigma_time=1e3,
+            chi2=0.0,
+            propagated_times=(),
+        )
+    if len(masses) != len(tracks):
+        raise ValueError("Mass list length must match track multiplicity.")
+
+    propagated = tuple(
+        propagate_track_time_to_vertex(
+            track=track,
+            mass=float(mass),
+            vertex_xyz=vertex_xyz,
+            speed_of_light=speed_of_light,
+        )
+        for track, mass in zip(tracks, masses, strict=True)
+    )
+
     sum_w = 0.0
     sum_wt = 0.0
-    for t in tracks:
+    for t, t_prop in zip(tracks, propagated, strict=True):
         if t.sigma_time <= 0.0:
             continue
         w = 1.0 / (t.sigma_time * t.sigma_time)
         sum_w += w
-        sum_wt += w * t.time
-    t_v = sum_wt / sum_w if sum_w > 0.0 else sum(t.time for t in tracks) / len(tracks)
-    sigma_t_v = (1.0 / sum_w) ** 0.5 if sum_w > 0.0 else 1e3
-    time_chi2 = 0.0
-    for t in tracks:
+        sum_wt += w * t_prop
+    if sum_w > 0.0:
+        t_v = sum_wt / sum_w
+        sigma_t_v = (1.0 / sum_w) ** 0.5
+    else:
+        t_v = sum(propagated) / len(propagated)
+        sigma_t_v = 1e3
+
+    chi2 = 0.0
+    for t, t_prop in zip(tracks, propagated, strict=True):
         if t.sigma_time <= 0.0:
             continue
-        dt = t.time - t_v
-        time_chi2 += (dt * dt) / (t.sigma_time * t.sigma_time)
-
-    return VertexFitResult(
-        vertex_xyz=(x_v, y_v, z_v),
+        dt = t_prop - t_v
+        chi2 += (dt * dt) / (t.sigma_time * t.sigma_time)
+    return VertexTimeFitResult(
         vertex_time=t_v,
-        spatial_chi2=spatial_chi2,
-        time_chi2=time_chi2,
-        cov_xyz=cov_xyz,
         sigma_time=sigma_t_v,
+        chi2=chi2,
+        propagated_times=propagated,
     )
+
+
+def propagate_track_time_to_vertex(
+    track: TrackState,
+    mass: float,
+    vertex_xyz: tuple[float, float, float],
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> float:
+    """Propagate a track time to a candidate vertex using a beta correction."""
+    # The sign of the path length preserves whether the vertex lies downstream
+    # or upstream of the track reference plane.
+    path = signed_path_length_to_vertex(track, vertex_xyz)
+    beta = track_beta(track, mass)
+    if beta <= 0.0 or speed_of_light <= 0.0:
+        return track.time
+    return track.time + path / (beta * speed_of_light)
+
+
+def signed_path_length_to_vertex(
+    track: TrackState, vertex_xyz: tuple[float, float, float]
+) -> float:
+    """Return signed flight length from track reference state to a z-vertex."""
+    dz = vertex_xyz[2] - track.z
+    return dz * (1.0 + track.tx * track.tx + track.ty * track.ty) ** 0.5
+
+
+def track_beta(track: TrackState, mass: float) -> float:
+    """Compute beta from track momentum magnitude and mass hypothesis."""
+    p = max(track.p, 0.0)
+    m = abs(mass)
+    energy = (p * p + m * m) ** 0.5
+    if energy <= 0.0:
+        return 0.0
+    beta = p / energy
+    if beta < 0.0:
+        return 0.0
+    if beta > 1.0:
+        return 1.0
+    return beta
 
 
 def pairwise_doca(tracks: list[TrackState]) -> dict[str, float]:

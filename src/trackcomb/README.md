@@ -14,14 +14,21 @@ Core package implementing event-level track/PV combination workflows.
   - Immutable data models:
     - `TrackState`
     - `PrimaryVertex`
+    - `EventInput`
+    - `ParticleHypothesis`
     - `LorentzVector`
     - `CombinationResult`
     - preselection/cut configuration classes.
 
+- `pid.py`
+  - Particle hypothesis helpers:
+    - `make_pion`, `make_kaon`, `make_proton`, `make_muon`, `make_electron`
+  - Name-to-hypothesis parser used by JSON mass-loader.
+
 - `physics.py`
   - Numeric/physics helpers:
     - track->Lorentz conversion
-    - vertex fit `(x,y,z,time)`
+    - vertex fit `(x,y,z,time)` with beta-corrected time propagation
     - DOCA, IP/IPchi2, pair kinematics
     - matrix utilities.
 
@@ -29,6 +36,7 @@ Core package implementing event-level track/PV combination workflows.
   - High-level combination engine (`ParticleCombiner`):
     - track preselection
     - n-body generation
+    - multi-event batching (`combine_events`)
     - candidate observable calculation
     - cut application
     - output object construction.
@@ -39,7 +47,7 @@ Core package implementing event-level track/PV combination workflows.
 
 - `io.py`
   - Input/output:
-    - load tracks/PVs/mass hypotheses from JSON
+    - load tracks/PVs/mass hypotheses/events from JSON
     - write flattened output tables (`parquet/csv/pkl`).
 
 - `cli.py`

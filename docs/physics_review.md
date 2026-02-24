@@ -22,9 +22,12 @@ This note reviews the current track vertexing and n-body combination logic for o
    - Current xyz fit solves unweighted line equations first, then evaluates chi2 with propagated xy covariance.
    - For precision analyses, use a fully weighted fit (or Kalman-style vertex fit) where covariance enters the solve itself.
 
-2. Timing model uses independent weighted average.
-   - Vertex time is estimated from per-track time and `sigma_time`.
-   - No coupling between spatial and temporal fits (often acceptable for first-pass scans).
+2. Timing model now propagates each track time to the fitted vertex with
+   mass-dependent beta.
+   - For each mass hypothesis, per-track `time(z_ref)` is transported to
+     `time(z_vertex)` using `beta = p/sqrt(p^2 + m^2)`.
+   - Vertex-time and pairwise-time chi2 values are therefore hypothesis-dependent.
+   - Spatial and temporal solves are still separated (pragmatic approximation).
 
 3. No explicit secondary-vertex displacement observables yet.
    - For `K_S` and charm, add:

@@ -1,0 +1,8 @@
+{
+  "mass_hypotheses": [
+    ["pi", "pi"],
+    ["kaon", "pi"],
+    ["proton", "pi"],
+    [{"name": "custom_mu", "mass": 0.1056583755}, "mu"]
+  ]
+}

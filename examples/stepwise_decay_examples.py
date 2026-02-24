@@ -16,15 +16,20 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from trackcomb import CombinationCuts, ParticleCombiner, combination_to_track_state
+from trackcomb import (
+    CombinationCuts,
+    ParticleCombiner,
+    ParticleHypothesis,
+    combination_to_track_state,
+    make_kaon,
+    make_muon,
+)
 from trackcomb.io import (
     load_primary_vertices_json,
     load_tracks_json,
     write_results_table,
 )
 
-M_MU = 0.105658
-M_K = 0.493677
 M_JPSI = 3.0969
 M_PHI = 1.019461
 
@@ -55,7 +60,7 @@ def main() -> int:
         tracks=tracks,
         primary_vertices=pvs,
         n_body=2,
-        mass_hypotheses=[[M_MU, M_MU]],
+        mass_hypotheses=[[make_muon(), make_muon()]],
         cuts=CombinationCuts(
             allowed_charge_patterns=("+-", "-+"),
             min_mass=2.8,
@@ -76,7 +81,7 @@ def main() -> int:
                 tracks=[jpsi, kaon],
                 primary_vertices=pvs,
                 n_body=2,
-                mass_hypotheses=[[M_JPSI, M_K]],
+                mass_hypotheses=[[ParticleHypothesis(name="J/psi", mass=M_JPSI), make_kaon()]],
                 cuts=CombinationCuts(min_mass=4.8, max_mass=5.8, max_doca=5.0),
             )
             b_to_jpsi_k.extend(stage)
@@ -86,7 +91,7 @@ def main() -> int:
         tracks=kaon_tracks,
         primary_vertices=pvs,
         n_body=2,
-        mass_hypotheses=[[M_K, M_K]],
+        mass_hypotheses=[[make_kaon(), make_kaon()]],
         cuts=CombinationCuts(
             allowed_charge_patterns=("+-", "-+"),
             min_mass=0.98,
@@ -104,7 +109,12 @@ def main() -> int:
                 tracks=[jpsi, phi],
                 primary_vertices=pvs,
                 n_body=2,
-                mass_hypotheses=[[M_JPSI, M_PHI]],
+                mass_hypotheses=[
+                    [
+                        ParticleHypothesis(name="J/psi", mass=M_JPSI),
+                        ParticleHypothesis(name="phi", mass=M_PHI),
+                    ]
+                ],
                 cuts=CombinationCuts(min_mass=4.8, max_mass=5.8, max_doca=5.0),
             )
             b_to_jpsi_phi.extend(stage)

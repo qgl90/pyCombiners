@@ -5,7 +5,16 @@ from __future__ import annotations
 import math
 import unittest
 
-from trackcomb import CombinationCuts, ParticleCombiner, PrimaryVertex, TrackState, TrackPreselection
+from trackcomb import (
+    CombinationCuts,
+    EventInput,
+    ParticleCombiner,
+    PrimaryVertex,
+    TrackPreselection,
+    TrackState,
+    make_kaon,
+    make_pion,
+)
 from trackcomb.physics import fit_vertex_xyz_t
 
 
@@ -182,6 +191,44 @@ class TestCombinerOperations(unittest.TestCase):
             cuts=CombinationCuts(allowed_charge_patterns=("++-", "+--")),
         )
         self.assertTrue(all(r.charge_pattern in {"++-", "+--"} for r in results))
+
+    def test_combine_events_tags_event_id(self) -> None:
+        """Event-batch combination should preserve source event ids in outputs."""
+        event0_tracks = (
+            TrackState("a0", z=0.0, x=0.0, y=0.0, tx=0.01, ty=0.0, time=0.0, cov4=self._cov4(), sigma_time=0.1, p=3.0),
+            TrackState("b0", z=0.0, x=0.2, y=0.0, tx=-0.01, ty=0.0, time=0.0, cov4=self._cov4(), sigma_time=0.1, p=4.0),
+        )
+        event1_tracks = (
+            TrackState("a1", z=0.0, x=-0.1, y=0.1, tx=0.02, ty=0.0, time=1.0, cov4=self._cov4(), sigma_time=0.1, p=3.0),
+            TrackState("b1", z=0.0, x=0.1, y=-0.1, tx=-0.02, ty=0.0, time=1.0, cov4=self._cov4(), sigma_time=0.1, p=4.0),
+        )
+        events = [
+            EventInput(event_id="evt0", tracks=event0_tracks, primary_vertices=tuple(self._pvs())),
+            EventInput(event_id="evt1", tracks=event1_tracks, primary_vertices=tuple(self._pvs())),
+        ]
+        results = ParticleCombiner().combine_events(
+            events=events,
+            n_body=2,
+            mass_hypotheses=[[0.13957, 0.13957]],
+        )
+        self.assertEqual(len(results), 2)
+        self.assertEqual({r.event_id for r in results}, {"evt0", "evt1"})
+
+    def test_named_particle_hypotheses_are_accepted(self) -> None:
+        """`make_*` particle helpers should be accepted by combiner API."""
+        tracks = [
+            TrackState("a", z=0.0, x=0.0, y=0.0, tx=0.0, ty=0.0, time=0.0, cov4=self._cov4(), sigma_time=0.1, p=3.0),
+            TrackState("b", z=0.0, x=0.1, y=0.0, tx=0.0, ty=0.0, time=0.0, cov4=self._cov4(), sigma_time=0.1, p=4.0),
+        ]
+        [result] = ParticleCombiner().combine(
+            tracks=tracks,
+            primary_vertices=self._pvs(),
+            n_body=2,
+            mass_hypotheses=[[make_kaon(), make_pion()]],
+        )
+        self.assertEqual(result.particle_hypotheses, ("K", "pi"))
+        self.assertAlmostEqual(result.masses[0], make_kaon().mass, places=12)
+        self.assertAlmostEqual(result.masses[1], make_pion().mass, places=12)
 
 
 if __name__ == "__main__":

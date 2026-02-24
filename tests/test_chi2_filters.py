@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from trackcomb import CombinationCuts, ParticleCombiner, PrimaryVertex, TrackState
+from trackcomb import (
+    CombinationCuts,
+    ParticleCombiner,
+    PrimaryVertex,
+    TrackState,
+    make_pion,
+    make_proton,
+)
 
 
 def _cov4(scale: float = 1.0):
@@ -79,6 +86,43 @@ class TestChi2Filters(unittest.TestCase):
         )
 
         self.assertEqual([r.track_ids for r in results], [("t1", "t2")])
+
+    def test_time_chi2_uses_beta_corrected_vertex_propagation(self) -> None:
+        """Pair/vertex time chi2 should include mass-dependent beta correction."""
+        tracks = [
+            TrackState(
+                "slow",
+                z=10.0,
+                x=1.0,
+                y=0.0,
+                tx=0.1,
+                ty=0.0,
+                time=0.0,
+                cov4=_cov4(0.01),
+                sigma_time=0.1,
+                p=0.25,
+            ),
+            TrackState(
+                "fast",
+                z=10.0,
+                x=-1.0,
+                y=0.0,
+                tx=-0.1,
+                ty=0.0,
+                time=0.0,
+                cov4=_cov4(0.01),
+                sigma_time=0.1,
+                p=5.0,
+            ),
+        ]
+        [res] = ParticleCombiner().combine(
+            tracks=tracks,
+            primary_vertices=[_pv()],
+            n_body=2,
+            mass_hypotheses=[[make_proton(), make_pion()]],
+        )
+        self.assertGreater(res.pair_time_chi2, 0.1)
+        self.assertGreater(res.vertex_time_chi2, 0.1)
 
 
 if __name__ == "__main__":

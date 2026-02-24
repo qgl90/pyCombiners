@@ -12,11 +12,15 @@ Event-level particle-combination framework for track containers and PV container
   - `hasCALO`, `caloDLL_e`
 - `PrimaryVertex`: `pv_id, x, y, z, cov3, time, sigma_time`
 - `ParticleCombiner`: builds 2/3/4-body combinations from tracks
+- Named particle hypotheses:
+  - `make_pion`, `make_kaon`, `make_proton`, `make_muon`, `make_electron`
+  - pass these directly in `mass_hypotheses`
 - Hierarchical/staged combinations via `combination_to_track_state(...)`:
   - treat accepted combination outputs as new track-like objects
   - preserve source-track provenance (`source_track_ids`)
   - reuse them in higher-level decay chains
 - 4D vertexing: fit `(x, y, z, time)` per candidate
+- Time propagation uses mass-dependent `beta = p/sqrt(p^2 + m^2)` when evaluating timing chi2
 - Pair/candidate metrics: DOCA, vertex chi2, mass, pair `pT`, pair `eta`, timing chi2
 - Track preselection: `pT`, `eta`, minimum IP wrt all PVs in event
 
@@ -35,6 +39,12 @@ PYTHONPATH=src python -m trackcomb \
   --masses examples/masses_2body.json \
   --n-body 2 \
   --out output_2body.parquet
+```
+
+Plain local script (no installation):
+
+```bash
+PYTHONPATH=src python examples/multi_event_api.py
 ```
 
 ## CLI Example With Cuts
@@ -83,6 +93,29 @@ results = combiner.combine(
 )
 ```
 
+Multi-event API (`event -> tracks + PVs`):
+
+```python
+from trackcomb import EventInput, ParticleCombiner, make_kaon, make_pion
+
+events: list[EventInput] = ...
+results = ParticleCombiner().combine_events(
+    events=events,
+    n_body=2,
+    mass_hypotheses=[[make_kaon(), make_pion()]],
+)
+```
+
+Multi-event CLI:
+
+```bash
+PYTHONPATH=src python -m trackcomb \
+  --events examples/events.json \
+  --masses examples/masses_pid_2body.json \
+  --n-body 2 \
+  --out output_events_2body.parquet
+```
+
 ## Stepwise Decay Chains (Composite -> Track Abstraction)
 
 Example script:
@@ -107,6 +140,8 @@ This demonstrates:
 - `track_pid_info` (RICH/CALO fields propagated from input tracks)
 - `charge_pattern`, `total_charge`
 - `source_track_ids` (provenance of original input tracks)
+- `event_id`
+- `particle_hypotheses`
 - `best_pv_id`
 
 Output is written as a tabular file based on extension:
@@ -116,15 +151,16 @@ Output is written as a tabular file based on extension:
 
 ## Examples and Tutorial
 
-- Mini tutorial: `/Users/renato/Documents/New project/docs/mini_tutorial.md`
-- Table inspection helper: `/Users/renato/Documents/New project/examples/inspect_table.py`
-- Peak/SB study helper: `/Users/renato/Documents/New project/examples/peak_study.py`
-- Physics review notes: `/Users/renato/Documents/New project/docs/physics_review.md`
+- Mini tutorial: `/Users/renato/Documents/New project/pyCombiners/docs/mini_tutorial.md`
+- Table inspection helper: `/Users/renato/Documents/New project/pyCombiners/examples/inspect_table.py`
+- Peak/SB study helper: `/Users/renato/Documents/New project/pyCombiners/examples/peak_study.py`
+- Multi-event API example: `/Users/renato/Documents/New project/pyCombiners/examples/multi_event_api.py`
+- Physics review notes: `/Users/renato/Documents/New project/pyCombiners/docs/physics_review.md`
 - Custom scripts:
-  - `/Users/renato/Documents/New project/examples/custom_analysis.py`
-  - `/Users/renato/Documents/New project/examples/custom_scripts/top_candidates.py`
-  - `/Users/renato/Documents/New project/examples/custom_scripts/filter_and_dump.py`
+  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_analysis.py`
+  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_scripts/top_candidates.py`
+  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_scripts/filter_and_dump.py`
 
 ## CI (GitLab)
 
-- Pipeline: `/Users/renato/Documents/New project/.gitlab-ci.yml`
+- Pipeline: `/Users/renato/Documents/New project/pyCombiners/.gitlab-ci.yml`

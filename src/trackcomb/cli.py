@@ -9,6 +9,7 @@ from typing import Any
 
 from .combiner import ParticleCombiner
 from .io import (
+    load_events_json,
     load_mass_hypotheses_json,
     load_primary_vertices_json,
     load_tracks_json,
@@ -23,10 +24,15 @@ def build_parser() -> argparse.ArgumentParser:
         prog="track-combiner",
         description="Build n-body track combinations with Lorentz vectors and time-chi2 filtering.",
     )
-    parser.add_argument("--tracks", required=True, help="Input JSON with key 'tracks'.")
+    parser.add_argument(
+        "--events",
+        required=False,
+        help="Input JSON with key 'events', each with its own tracks and primary_vertices.",
+    )
+    parser.add_argument("--tracks", required=False, help="Input JSON with key 'tracks'.")
     parser.add_argument(
         "--primary-vertices",
-        required=True,
+        required=False,
         help="Input JSON for primary vertices (list with x,y,z,cov3,time,sigma_time).",
     )
     parser.add_argument(
@@ -96,9 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """CLI entrypoint: load inputs, run combiner, write table, optional custom hook."""
-    args = build_parser().parse_args(argv)
-    tracks = load_tracks_json(args.tracks)
-    primary_vertices = load_primary_vertices_json(args.primary_vertices)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     mass_hypotheses = load_mass_hypotheses_json(args.masses)
     preselection = TrackPreselection(
         min_pt=args.min_track_pt,
@@ -123,14 +128,30 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     combiner = ParticleCombiner()
-    results = combiner.combine(
-        tracks=tracks,
-        primary_vertices=primary_vertices,
-        n_body=args.n_body,
-        mass_hypotheses=mass_hypotheses,
-        preselection=preselection,
-        cuts=cuts,
-    )
+    if args.events:
+        if args.tracks or args.primary_vertices:
+            parser.error("Use either --events or --tracks/--primary-vertices, not both.")
+        events = load_events_json(args.events)
+        results = combiner.combine_events(
+            events=events,
+            n_body=args.n_body,
+            mass_hypotheses=mass_hypotheses,
+            preselection=preselection,
+            cuts=cuts,
+        )
+    else:
+        if not args.tracks or not args.primary_vertices:
+            parser.error("Single-event mode requires --tracks and --primary-vertices.")
+        tracks = load_tracks_json(args.tracks)
+        primary_vertices = load_primary_vertices_json(args.primary_vertices)
+        results = combiner.combine(
+            tracks=tracks,
+            primary_vertices=primary_vertices,
+            n_body=args.n_body,
+            mass_hypotheses=mass_hypotheses,
+            preselection=preselection,
+            cuts=cuts,
+        )
     write_results_table(args.out, results)
 
     if args.custom_script:
@@ -138,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             script_path=args.custom_script,
             results=results,
             context={
+                "events_path": args.events,
                 "tracks_path": args.tracks,
                 "primary_vertices_path": args.primary_vertices,
                 "masses_path": args.masses,

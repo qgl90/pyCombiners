@@ -1,0 +1,268 @@
+{
+  "events": [
+    {
+      "event_id": "evt0",
+      "tracks": [
+        {
+          "track_id": "e0_t1",
+          "z": 100.0,
+          "state": {
+            "x": 0.3,
+            "y": -0.1,
+            "tx": 0.015,
+            "ty": -0.010,
+            "time": 5.1
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 12.5,
+          "charge": 1,
+          "sigma_time": 0.08,
+          "hasRICH1": true,
+          "hasRICH2": false,
+          "richDLL_pi": 4.1,
+          "richDLL_k": -1.2,
+          "richDLL_p": -3.4,
+          "richDLL_e": -5.1,
+          "hasCALO": true,
+          "caloDLL_e": -2.7
+        },
+        {
+          "track_id": "e0_t2",
+          "z": 100.0,
+          "state": {
+            "x": -0.4,
+            "y": 0.2,
+            "tx": -0.020,
+            "ty": 0.011,
+            "time": 5.0
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 9.2,
+          "charge": -1,
+          "sigma_time": 0.09,
+          "hasRICH1": true,
+          "hasRICH2": true,
+          "richDLL_pi": 1.2,
+          "richDLL_k": 3.3,
+          "richDLL_p": -0.9,
+          "richDLL_e": -4.5,
+          "hasCALO": false,
+          "caloDLL_e": -6.0
+        },
+        {
+          "track_id": "e0_t3",
+          "z": 100.0,
+          "state": {
+            "x": 0.1,
+            "y": 0.15,
+            "tx": 0.010,
+            "ty": 0.006,
+            "time": 5.2
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 7.8,
+          "charge": 1,
+          "sigma_time": 0.07,
+          "hasRICH1": true,
+          "hasRICH2": false,
+          "richDLL_pi": -0.5,
+          "richDLL_k": 2.1,
+          "richDLL_p": 1.6,
+          "richDLL_e": -3.2,
+          "hasCALO": true,
+          "caloDLL_e": 4.4
+        },
+        {
+          "track_id": "e0_t4",
+          "z": 100.0,
+          "state": {
+            "x": -0.2,
+            "y": -0.3,
+            "tx": 0.007,
+            "ty": -0.014,
+            "time": 5.15
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 15.1,
+          "charge": -1,
+          "sigma_time": 0.08,
+          "hasRICH1": false,
+          "hasRICH2": true,
+          "richDLL_pi": 0.3,
+          "richDLL_k": -0.8,
+          "richDLL_p": 2.7,
+          "richDLL_e": -1.9,
+          "hasCALO": false,
+          "caloDLL_e": -5.5
+        }
+      ],
+      "primary_vertices": [
+        {
+          "pv_id": "evt0_pv0",
+          "x": 0.0,
+          "y": 0.0,
+          "z": 100.0,
+          "cov3": [
+            [0.0025, 0.0, 0.0],
+            [0.0, 0.0025, 0.0],
+            [0.0, 0.0, 0.01]
+          ],
+          "time": 5.0,
+          "sigma_time": 0.05
+        }
+      ]
+    },
+    {
+      "event_id": "evt1",
+      "tracks": [
+        {
+          "track_id": "e1_t1",
+          "z": 110.0,
+          "state": {
+            "x": 0.20,
+            "y": -0.04,
+            "tx": 0.013,
+            "ty": -0.009,
+            "time": 6.10
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 11.0,
+          "charge": 1,
+          "sigma_time": 0.08,
+          "hasRICH1": true,
+          "hasRICH2": true,
+          "richDLL_pi": 2.4,
+          "richDLL_k": 0.7,
+          "richDLL_p": -2.9,
+          "richDLL_e": -4.8,
+          "hasCALO": true,
+          "caloDLL_e": -1.8
+        },
+        {
+          "track_id": "e1_t2",
+          "z": 110.0,
+          "state": {
+            "x": -0.34,
+            "y": 0.11,
+            "tx": -0.019,
+            "ty": 0.010,
+            "time": 6.00
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 8.6,
+          "charge": -1,
+          "sigma_time": 0.09,
+          "hasRICH1": true,
+          "hasRICH2": false,
+          "richDLL_pi": 0.8,
+          "richDLL_k": 2.7,
+          "richDLL_p": -1.2,
+          "richDLL_e": -4.1,
+          "hasCALO": false,
+          "caloDLL_e": -5.7
+        },
+        {
+          "track_id": "e1_t3",
+          "z": 110.0,
+          "state": {
+            "x": 0.07,
+            "y": 0.22,
+            "tx": 0.009,
+            "ty": 0.005,
+            "time": 6.20
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 7.1,
+          "charge": 1,
+          "sigma_time": 0.07,
+          "hasRICH1": true,
+          "hasRICH2": false,
+          "richDLL_pi": -0.8,
+          "richDLL_k": 1.7,
+          "richDLL_p": 0.9,
+          "richDLL_e": -2.9,
+          "hasCALO": true,
+          "caloDLL_e": 3.8
+        },
+        {
+          "track_id": "e1_t4",
+          "z": 110.0,
+          "state": {
+            "x": -0.11,
+            "y": -0.25,
+            "tx": 0.006,
+            "ty": -0.013,
+            "time": 6.15
+          },
+          "cov4": [
+            [0.01, 0.0, 0.0, 0.0],
+            [0.0, 0.01, 0.0, 0.0],
+            [0.0, 0.0, 0.001, 0.0],
+            [0.0, 0.0, 0.0, 0.001]
+          ],
+          "p": 14.0,
+          "charge": -1,
+          "sigma_time": 0.08,
+          "hasRICH1": false,
+          "hasRICH2": true,
+          "richDLL_pi": 0.1,
+          "richDLL_k": -1.1,
+          "richDLL_p": 2.4,
+          "richDLL_e": -2.0,
+          "hasCALO": false,
+          "caloDLL_e": -5.0
+        }
+      ],
+      "primary_vertices": [
+        {
+          "pv_id": "evt1_pv0",
+          "x": 0.01,
+          "y": -0.01,
+          "z": 110.0,
+          "cov3": [
+            [0.0025, 0.0, 0.0],
+            [0.0, 0.0025, 0.0],
+            [0.0, 0.0, 0.01]
+          ],
+          "time": 6.0,
+          "sigma_time": 0.05
+        }
+      ]
+    }
+  ]
+}

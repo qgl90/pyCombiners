@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .models import CombinationResult, PrimaryVertex, TrackState
+from .models import CombinationResult, EventInput, ParticleHypothesis, PrimaryVertex, TrackState
+from .pid import particle_hypothesis_from_name
 
 
 def load_tracks_json(path: str | Path) -> list[TrackState]:
@@ -15,42 +16,10 @@ def load_tracks_json(path: str | Path) -> list[TrackState]:
     tracks_data = data.get("tracks")
     if not isinstance(tracks_data, list):
         raise ValueError("Input JSON must contain a list under key 'tracks'.")
-    tracks: list[TrackState] = []
-    for idx, item in enumerate(tracks_data):
-        if not isinstance(item, dict):
-            raise ValueError(f"Track entry at index {idx} must be an object.")
-        source_ids_raw = item.get("source_track_ids")
-        if source_ids_raw is None:
-            source_ids = (str(item["track_id"]),)
-        else:
-            if not isinstance(source_ids_raw, list):
-                raise ValueError("Track field 'source_track_ids' must be a list of strings.")
-            source_ids = tuple(str(x) for x in source_ids_raw)
-        tracks.append(
-            TrackState(
-                track_id=str(item["track_id"]),
-                z=float(item["z"]),
-                x=float(item["state"]["x"] if "state" in item else item["x"]),
-                y=float(item["state"]["y"] if "state" in item else item["y"]),
-                tx=float(item["state"]["tx"] if "state" in item else item["tx"]),
-                ty=float(item["state"]["ty"] if "state" in item else item["ty"]),
-                time=float(item["state"]["time"] if "state" in item else item.get("t", item["time"])),
-                cov4=_parse_cov4(item["cov4"]),
-                sigma_time=float(item.get("sigma_time", item.get("sigma_t", 1.0))),
-                p=float(item["p"]),
-                charge=int(item.get("charge", 0)),
-                has_rich1=bool(item.get("hasRICH1", False)),
-                has_rich2=bool(item.get("hasRICH2", False)),
-                rich_dll_pi=float(item.get("richDLL_pi", 0.0)),
-                rich_dll_k=float(item.get("richDLL_k", 0.0)),
-                rich_dll_p=float(item.get("richDLL_p", 0.0)),
-                rich_dll_e=float(item.get("richDLL_e", 0.0)),
-                has_calo=bool(item.get("hasCALO", False)),
-                calo_dll_e=float(item.get("caloDLL_e", 0.0)),
-                source_track_ids=source_ids,
-            )
-        )
-    return tracks
+    return [
+        _parse_track_item(item=item, idx=idx, context=f"{path}")
+        for idx, item in enumerate(tracks_data)
+    ]
 
 
 def load_primary_vertices_json(path: str | Path) -> list[PrimaryVertex]:
@@ -61,44 +30,70 @@ def load_primary_vertices_json(path: str | Path) -> list[PrimaryVertex]:
     - backward-compatible single PV object.
     """
     data = _load_json(path)
-    pvs_data = data.get("primary_vertices")
-    if pvs_data is None:
-        # backward compatibility with single-PV JSON
-        pv_data = data.get("primary_vertex", data)
-        if not isinstance(pv_data, dict):
-            raise ValueError("Primary vertex JSON must contain 'primary_vertices' list or single object.")
-        pvs_data = [pv_data]
-    if not isinstance(pvs_data, list):
-        raise ValueError("Primary vertex JSON key 'primary_vertices' must be a list.")
-    out: list[PrimaryVertex] = []
-    for idx, pv_data in enumerate(pvs_data):
-        if not isinstance(pv_data, dict):
-            raise ValueError(f"Primary vertex at index {idx} must be an object.")
-        out.append(
-            PrimaryVertex(
-                pv_id=str(pv_data.get("pv_id", f"pv{idx}")),
-                x=float(pv_data["x"]),
-                y=float(pv_data["y"]),
-                z=float(pv_data["z"]),
-                cov3=_parse_cov3(pv_data["cov3"]),
-                time=float(pv_data["time"]),
-                sigma_time=float(pv_data["sigma_time"]),
-            )
+    pvs_data = _extract_primary_vertices_payload(data)
+    return [
+        _parse_primary_vertex_item(item=pv_data, idx=idx, context=f"{path}")
+        for idx, pv_data in enumerate(pvs_data)
+    ]
+
+
+def load_events_json(path: str | Path) -> list[EventInput]:
+    """Load multi-event input JSON into `EventInput` objects.
+
+    Expected shape:
+    {
+      "events": [
+        {"event_id": "...", "tracks": [...], "primary_vertices": [...]},
+        ...
+      ]
+    }
+    """
+    data = _load_json(path)
+    events_data = data.get("events")
+    if not isinstance(events_data, list):
+        raise ValueError("Events JSON must contain a list under key 'events'.")
+    out: list[EventInput] = []
+    for idx, event in enumerate(events_data):
+        if not isinstance(event, dict):
+            raise ValueError(f"Event entry at index {idx} must be an object.")
+        event_id = str(event.get("event_id", f"evt{idx}"))
+        tracks_data = event.get("tracks")
+        if not isinstance(tracks_data, list):
+            raise ValueError(f"Event '{event_id}' must contain a list under key 'tracks'.")
+        pvs_data = _extract_primary_vertices_payload(event, allow_object_fallback=False)
+        tracks = tuple(
+            _parse_track_item(item=track_item, idx=tidx, context=f"event '{event_id}'")
+            for tidx, track_item in enumerate(tracks_data)
         )
+        pvs = tuple(
+            _parse_primary_vertex_item(item=pv_item, idx=pidx, context=f"event '{event_id}'")
+            for pidx, pv_item in enumerate(pvs_data)
+        )
+        out.append(EventInput(event_id=event_id, tracks=tracks, primary_vertices=pvs))
     return out
 
 
-def load_mass_hypotheses_json(path: str | Path) -> list[tuple[float, ...]]:
-    """Load mass-hypothesis sets from JSON."""
+def load_mass_hypotheses_json(
+    path: str | Path,
+) -> list[tuple[float | ParticleHypothesis, ...]]:
+    """Load mass-hypothesis sets from JSON.
+
+    Supported per-entry values in each hypothesis list:
+    - numeric mass (float/int)
+    - string particle name (`"pi"`, `"kaon"`, `"mu"`, ...)
+    - object with explicit mass (`{"name": "...", "mass": ...}`)
+    - object with particle alias (`{"pid": "pi"}`)
+    """
     data = _load_json(path)
     masses_data = data.get("mass_hypotheses")
     if not isinstance(masses_data, list):
         raise ValueError("Mass JSON must contain a list under key 'mass_hypotheses'.")
-    parsed: list[tuple[float, ...]] = []
+    parsed: list[tuple[float | ParticleHypothesis, ...]] = []
     for idx, hyp in enumerate(masses_data):
         if not isinstance(hyp, list):
             raise ValueError(f"Mass hypothesis at index {idx} must be a list.")
-        parsed.append(tuple(float(x) for x in hyp))
+        # Keep rich entries (named hypotheses) for downstream provenance fields.
+        parsed.append(tuple(_parse_mass_entry(entry) for entry in hyp))
     return parsed
 
 
@@ -125,9 +120,11 @@ def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for res in results:
         row: dict[str, Any] = {
+            "event_id": res.event_id,
             "track_ids": ",".join(res.track_ids),
             "source_track_ids": ",".join(res.source_track_ids),
             "masses": ",".join(str(x) for x in res.masses),
+            "particle_hypotheses": ",".join(res.particle_hypotheses),
             "vertex_x": res.vertex_xyz[0],
             "vertex_y": res.vertex_xyz[1],
             "vertex_z": res.vertex_xyz[2],
@@ -187,6 +184,109 @@ def _require_pandas():
             "pandas is required to write output tables. Install pandas and pyarrow."
         ) from exc
     return pd
+
+
+def _parse_track_item(item: Any, idx: int, context: str) -> TrackState:
+    """Parse one track dictionary into a `TrackState`."""
+    if not isinstance(item, dict):
+        raise ValueError(f"Track entry at index {idx} in {context} must be an object.")
+    source_ids_raw = item.get("source_track_ids")
+    if source_ids_raw is None:
+        source_ids = (str(item["track_id"]),)
+    else:
+        if not isinstance(source_ids_raw, list):
+            raise ValueError("Track field 'source_track_ids' must be a list of strings.")
+        source_ids = tuple(str(x) for x in source_ids_raw)
+    state = item.get("state", item)
+    if not isinstance(state, dict):
+        raise ValueError(f"Track state at index {idx} in {context} must be an object.")
+    if "time" in state:
+        time_value = state["time"]
+    elif "t" in item:
+        time_value = item["t"]
+    elif "time" in item:
+        time_value = item["time"]
+    else:
+        raise ValueError(f"Track at index {idx} in {context} must define a time field.")
+    return TrackState(
+        track_id=str(item["track_id"]),
+        z=float(item["z"]),
+        x=float(state["x"]),
+        y=float(state["y"]),
+        tx=float(state["tx"]),
+        ty=float(state["ty"]),
+        time=float(time_value),
+        cov4=_parse_cov4(item["cov4"]),
+        sigma_time=float(item.get("sigma_time", item.get("sigma_t", 1.0))),
+        p=float(item["p"]),
+        charge=int(item.get("charge", 0)),
+        has_rich1=bool(item.get("hasRICH1", False)),
+        has_rich2=bool(item.get("hasRICH2", False)),
+        rich_dll_pi=float(item.get("richDLL_pi", 0.0)),
+        rich_dll_k=float(item.get("richDLL_k", 0.0)),
+        rich_dll_p=float(item.get("richDLL_p", 0.0)),
+        rich_dll_e=float(item.get("richDLL_e", 0.0)),
+        has_calo=bool(item.get("hasCALO", False)),
+        calo_dll_e=float(item.get("caloDLL_e", 0.0)),
+        source_track_ids=source_ids,
+    )
+
+
+def _parse_primary_vertex_item(item: Any, idx: int, context: str) -> PrimaryVertex:
+    """Parse one PV dictionary into a `PrimaryVertex`."""
+    if not isinstance(item, dict):
+        raise ValueError(f"Primary vertex at index {idx} in {context} must be an object.")
+    return PrimaryVertex(
+        pv_id=str(item.get("pv_id", f"pv{idx}")),
+        x=float(item["x"]),
+        y=float(item["y"]),
+        z=float(item["z"]),
+        cov3=_parse_cov3(item["cov3"]),
+        time=float(item["time"]),
+        sigma_time=float(item["sigma_time"]),
+    )
+
+
+def _parse_mass_entry(entry: Any) -> float | ParticleHypothesis:
+    """Parse one mass-hypothesis entry."""
+    if isinstance(entry, (int, float)):
+        return float(entry)
+    if isinstance(entry, str):
+        return particle_hypothesis_from_name(entry)
+    if isinstance(entry, dict):
+        # Accept shorthand aliases first, then explicit custom masses.
+        if "pid" in entry:
+            return particle_hypothesis_from_name(str(entry["pid"]))
+        if "particle" in entry:
+            return particle_hypothesis_from_name(str(entry["particle"]))
+        if "mass" not in entry:
+            raise ValueError("Mass hypothesis object must define 'mass', 'pid', or 'particle'.")
+        mass = float(entry["mass"])
+        name = str(entry.get("name", f"m={mass:g}"))
+        pdg_id = entry.get("pdg_id")
+        parsed_pdg = int(pdg_id) if pdg_id is not None else None
+        return ParticleHypothesis(name=name, mass=mass, pdg_id=parsed_pdg)
+    raise ValueError(
+        f"Unsupported mass hypothesis entry {entry!r}. Use number, string, or object."
+    )
+
+
+def _extract_primary_vertices_payload(
+    data: dict[str, Any],
+    allow_object_fallback: bool = True,
+) -> list[Any]:
+    """Extract a PV list from an event/object payload."""
+    pvs_data = data.get("primary_vertices", data.get("pvs"))
+    if pvs_data is None:
+        if not allow_object_fallback:
+            raise ValueError("Event payload must contain 'primary_vertices' (or 'pvs') list.")
+        pv_data = data.get("primary_vertex", data)
+        if not isinstance(pv_data, dict):
+            raise ValueError("Primary vertex JSON must contain 'primary_vertices' list or single object.")
+        pvs_data = [pv_data]
+    if not isinstance(pvs_data, list):
+        raise ValueError("Primary vertex JSON key 'primary_vertices' must be a list.")
+    return pvs_data
 
 
 def _parse_cov4(value: Any):

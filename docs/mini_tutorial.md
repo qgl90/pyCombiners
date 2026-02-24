@@ -11,7 +11,43 @@ PYTHONPATH=src python -m trackcomb \
   --out output_2body.parquet
 ```
 
-## 2. Add preselection on tracks
+## 2. Run a plain local Python script (no install)
+
+Use the package directly from source with `PYTHONPATH=src`.
+
+```bash
+PYTHONPATH=src python examples/multi_event_api.py
+```
+
+The example script uses named hypothesis builders:
+
+```python
+from trackcomb import ParticleCombiner, make_kaon, make_pion
+
+results = ParticleCombiner().combine(
+    tracks=tracks_for_event,
+    primary_vertices=pvs_for_event,
+    n_body=2,
+    mass_hypotheses=[[make_kaon(), make_pion()]],
+)
+```
+
+## 3. Run over multiple events (each with its own tracks and PV list)
+
+```bash
+PYTHONPATH=src python -m trackcomb \
+  --events examples/events.json \
+  --masses examples/masses_pid_2body.json \
+  --n-body 2 \
+  --out output_events_2body.parquet
+```
+
+`examples/events.json` is an array of event objects where each event contains:
+- `event_id`
+- `tracks`
+- `primary_vertices`
+
+## 4. Add preselection on tracks
 
 ```bash
 track-combiner \
@@ -25,7 +61,7 @@ track-combiner \
   --out output_2body_prefiltered.parquet
 ```
 
-## 3. Add candidate cuts (DOCA, vertex, mass, kinematics)
+## 5. Add candidate cuts (DOCA, vertex, mass, kinematics)
 
 ```bash
 track-combiner \
@@ -46,7 +82,7 @@ track-combiner \
   --out output_3body_filtered.parquet
 ```
 
-## 4. Event usage: tracks list + PV list
+## 6. Event usage from Python API
 
 ```python
 from trackcomb import CombinationCuts, ParticleCombiner, TrackPreselection
@@ -62,7 +98,22 @@ results = combiner.combine(
 )
 ```
 
-## 5. Inspect / plot the output table
+For batch processing:
+
+```python
+from trackcomb import EventInput, ParticleCombiner
+
+results = ParticleCombiner().combine_events(
+    events=[
+        EventInput(event_id="evt0", tracks=tuple(tracks_evt0), primary_vertices=tuple(pvs_evt0)),
+        EventInput(event_id="evt1", tracks=tuple(tracks_evt1), primary_vertices=tuple(pvs_evt1)),
+    ],
+    n_body=2,
+    mass_hypotheses=[[0.13957, 0.13957]],
+)
+```
+
+## 7. Inspect / plot the output table
 
 ```bash
 python examples/inspect_table.py \
@@ -70,7 +121,7 @@ python examples/inspect_table.py \
   --plot
 ```
 
-## 6. Estimate signal/background around known peaks
+## 8. Estimate signal/background around known peaks
 
 `K_S -> pi pi` sideband study:
 
@@ -90,7 +141,7 @@ python examples/peak_study.py \
   --plot
 ```
 
-## 7. Run staged combinations (composite candidates as tracks)
+## 9. Run staged combinations (composite candidates as tracks)
 
 ```bash
 python examples/stepwise_decay_examples.py
