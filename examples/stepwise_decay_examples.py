@@ -13,6 +13,8 @@ combination output into a new `TrackState` carrying:
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from pathlib import Path
 

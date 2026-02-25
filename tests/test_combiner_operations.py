@@ -1,6 +1,8 @@
 """Unit tests for core combiner operations and helper behavior."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import math
 import unittest
@@ -145,6 +147,10 @@ class TestCombinerOperations(unittest.TestCase):
         self.assertIn("doca23", res.doca_pairs)
         self.assertIn("a", res.track_min_ip)
         self.assertIn("a", res.track_min_ip_chi2)
+        self.assertEqual(res.best_pv_id, "pvX")
+        self.assertEqual(res.preselected_pv_ids, ("pvX",))
+        self.assertIsNotNone(res.composite_min_ip)
+        self.assertIsNotNone(res.composite_pv_time_chi2)
 
     def test_preselection_min_track_pt(self) -> None:
         """Track preselection by minimum pT must keep only qualifying tracks."""
@@ -213,6 +219,54 @@ class TestCombinerOperations(unittest.TestCase):
         )
         self.assertEqual(len(results), 2)
         self.assertEqual({r.event_id for r in results}, {"evt0", "evt1"})
+
+    def test_composite_pv_association_uses_time_preselection_then_min_ip(self) -> None:
+        """Composite best PV should be chosen by min IP after PV time preselection."""
+        tracks = [
+            TrackState("a", z=0.0, x=0.0, y=0.0, tx=0.01, ty=0.0, time=1.0, cov4=self._cov4(0.01), sigma_time=0.05, p=8.0),
+            TrackState("b", z=0.0, x=0.2, y=0.0, tx=-0.01, ty=0.0, time=1.0, cov4=self._cov4(0.01), sigma_time=0.05, p=8.0),
+        ]
+        pvs = [
+            PrimaryVertex(
+                pv_id="pv_good",
+                x=0.5,
+                y=0.0,
+                z=0.0,
+                cov3=((0.01, 0.0, 0.0), (0.0, 0.01, 0.0), (0.0, 0.0, 0.01)),
+                time=1.0,
+                sigma_time=0.05,
+            ),
+            PrimaryVertex(
+                pv_id="pv_bad",
+                x=0.1,
+                y=0.0,
+                z=0.0,
+                cov3=((0.01, 0.0, 0.0), (0.0, 0.01, 0.0), (0.0, 0.0, 0.01)),
+                time=2.0,
+                sigma_time=0.05,
+            ),
+        ]
+        [all_pv_result] = ParticleCombiner().combine(
+            tracks=tracks,
+            primary_vertices=pvs,
+            n_body=2,
+            mass_hypotheses=[[0.13957, 0.13957]],
+        )
+        self.assertEqual(all_pv_result.best_pv_id, "pv_bad")
+        self.assertEqual(all_pv_result.preselected_pv_ids, ("pv_good", "pv_bad"))
+
+        [time_selected_result] = ParticleCombiner().combine(
+            tracks=tracks,
+            primary_vertices=pvs,
+            n_body=2,
+            mass_hypotheses=[[0.13957, 0.13957]],
+            cuts=CombinationCuts(max_composite_pv_time_chi2=10.0),
+        )
+        self.assertEqual(time_selected_result.best_pv_id, "pv_good")
+        self.assertEqual(time_selected_result.preselected_pv_ids, ("pv_good",))
+        assert all_pv_result.composite_min_ip is not None
+        assert time_selected_result.composite_min_ip is not None
+        self.assertGreater(time_selected_result.composite_min_ip, all_pv_result.composite_min_ip)
 
     def test_named_particle_hypotheses_are_accepted(self) -> None:
         """`make_*` particle helpers should be accepted by combiner API."""

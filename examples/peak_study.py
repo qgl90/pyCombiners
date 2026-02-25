@@ -5,6 +5,8 @@ particle combiner over many events and writing a parquet/csv/pickle table.
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import argparse
 import json

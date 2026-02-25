@@ -14,6 +14,8 @@ Run without package installation:
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import argparse
 import json

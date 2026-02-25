@@ -1,6 +1,8 @@
 """Utility script to inspect/plot table outputs produced by the combiner."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import argparse
 from pathlib import Path

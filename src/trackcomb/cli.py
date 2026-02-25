@@ -1,6 +1,8 @@
 """Command-line interface for running particle combinations on event inputs."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import argparse
 import importlib.util
@@ -73,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-pair-eta", type=float, default=None, help="Minimum candidate pseudorapidity.")
     parser.add_argument("--max-pair-eta", type=float, default=None, help="Maximum candidate pseudorapidity.")
     parser.add_argument(
+        "--max-composite-pv-time-chi2",
+        type=float,
+        default=None,
+        help="Optional preselection on composite-to-PV time-agreement chi2 before best-PV IP ranking.",
+    )
+    parser.add_argument(
         "--allowed-charge-patterns",
         type=str,
         default=None,
@@ -122,6 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         max_pair_pt=args.max_pair_pt,
         min_pair_eta=args.min_pair_eta,
         max_pair_eta=args.max_pair_eta,
+        max_composite_pv_time_chi2=args.max_composite_pv_time_chi2,
         allowed_charge_patterns=None
         if args.allowed_charge_patterns is None
         else tuple(x.strip() for x in args.allowed_charge_patterns.split(",") if x.strip()),

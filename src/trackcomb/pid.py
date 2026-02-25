@@ -5,6 +5,8 @@ combiner API instead of raw numeric masses.
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from .models import ParticleHypothesis
 

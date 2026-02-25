@@ -1,6 +1,8 @@
 """Input/output helpers for JSON inputs and tabular result export."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import json
 from pathlib import Path
@@ -149,6 +151,12 @@ def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
             "charge_pattern": res.charge_pattern,
             "total_charge": res.total_charge,
             "best_pv_id": res.best_pv_id,
+            "preselected_pv_ids": ",".join(res.preselected_pv_ids),
+            "composite_min_ip": res.composite_min_ip,
+            "composite_min_ip_chi2": res.composite_min_ip_chi2,
+            "composite_pv_time_chi2": res.composite_pv_time_chi2,
+            "composite_pv_time_residual": res.composite_pv_time_residual,
+            "composite_pv_flight_time": res.composite_pv_flight_time,
         }
         for idx, (x, y) in enumerate(res.vertices_xy):
             row[f"v{idx}_x"] = x

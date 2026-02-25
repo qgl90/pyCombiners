@@ -1,6 +1,8 @@
 """Example custom callback: write a tiny summary of best timing candidate."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import json
 from pathlib import Path

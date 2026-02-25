@@ -1,6 +1,8 @@
 """Physics/math helpers for building and filtering particle combinations."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import math
 from dataclasses import dataclass
@@ -31,6 +33,18 @@ class VertexTimeFitResult:
     sigma_time: float
     chi2: float
     propagated_times: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class CompositePVAssociation:
+    """Composite-to-PV association metrics for one primary-vertex candidate."""
+
+    pv_id: str
+    ip: float
+    ip_chi2: float
+    time_residual: float
+    time_chi2: float
+    flight_time: float
 
 
 def track_to_lorentz(track: TrackState, mass: float) -> LorentzVector:
@@ -368,6 +382,149 @@ def min_impact_parameter_to_pvs(track: TrackState, pvs: list[PrimaryVertex]) -> 
     return best_ip, best_chi2, best_id
 
 
+def associate_composite_to_pvs(
+    vertex_xyz: tuple[float, float, float],
+    vertex_cov_xyz: Matrix3x3,
+    vertex_time: float,
+    vertex_sigma_time: float,
+    candidate_p4: LorentzVector,
+    pvs: Sequence[PrimaryVertex],
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> list[CompositePVAssociation]:
+    """Compute composite-to-PV IP/time compatibility metrics for all PVs."""
+    out: list[CompositePVAssociation] = []
+    for pv in pvs:
+        ip, ip_chi2 = composite_impact_parameter_to_pv(
+            vertex_xyz=vertex_xyz,
+            vertex_cov_xyz=vertex_cov_xyz,
+            candidate_p4=candidate_p4,
+            pv=pv,
+        )
+        time_residual, time_chi2, flight_time = composite_time_agreement_to_pv(
+            vertex_xyz=vertex_xyz,
+            vertex_cov_xyz=vertex_cov_xyz,
+            vertex_time=vertex_time,
+            vertex_sigma_time=vertex_sigma_time,
+            candidate_p4=candidate_p4,
+            pv=pv,
+            speed_of_light=speed_of_light,
+        )
+        out.append(
+            CompositePVAssociation(
+                pv_id=pv.pv_id,
+                ip=ip,
+                ip_chi2=ip_chi2,
+                time_residual=time_residual,
+                time_chi2=time_chi2,
+                flight_time=flight_time,
+            )
+        )
+    return out
+
+
+def composite_impact_parameter_to_pv(
+    vertex_xyz: tuple[float, float, float],
+    vertex_cov_xyz: Matrix3x3,
+    candidate_p4: LorentzVector,
+    pv: PrimaryVertex,
+) -> tuple[float, float]:
+    """Compute 2D IP and IP chi2 of a composite candidate w.r.t. one PV."""
+    x_v, y_v, z_v = vertex_xyz
+    ux, uy, uz = _unit_candidate_direction(candidate_p4)
+    if abs(uz) > 1e-12:
+        tx = ux / uz
+        ty = uy / uz
+        dz = pv.z - z_v
+        x = x_v + tx * dz
+        y = y_v + ty * dz
+        # Propagate only vertex-position covariance; slope uncertainty is not
+        # available for composites at this stage.
+        var_x = (
+            vertex_cov_xyz[0][0]
+            + tx * tx * vertex_cov_xyz[2][2]
+            - 2.0 * tx * vertex_cov_xyz[0][2]
+        )
+        var_y = (
+            vertex_cov_xyz[1][1]
+            + ty * ty * vertex_cov_xyz[2][2]
+            - 2.0 * ty * vertex_cov_xyz[1][2]
+        )
+        cov_xy = (
+            vertex_cov_xyz[0][1]
+            - ty * vertex_cov_xyz[0][2]
+            - tx * vertex_cov_xyz[1][2]
+            + tx * ty * vertex_cov_xyz[2][2]
+        )
+    else:
+        x = x_v
+        y = y_v
+        var_x = vertex_cov_xyz[0][0]
+        var_y = vertex_cov_xyz[1][1]
+        cov_xy = vertex_cov_xyz[0][1]
+
+    dx = x - pv.x
+    dy = y - pv.y
+    ip = math.sqrt(dx * dx + dy * dy)
+    total_cov = (
+        (
+            max(var_x, 0.0) + pv.cov3[0][0],
+            cov_xy + pv.cov3[0][1],
+        ),
+        (
+            cov_xy + pv.cov3[1][0],
+            max(var_y, 0.0) + pv.cov3[1][1],
+        ),
+    )
+    inv = invert_2x2(total_cov)
+    if inv is None:
+        return ip, dx * dx + dy * dy
+    chi2 = dx * (inv[0][0] * dx + inv[0][1] * dy) + dy * (inv[1][0] * dx + inv[1][1] * dy)
+    return ip, chi2
+
+
+def composite_time_agreement_to_pv(
+    vertex_xyz: tuple[float, float, float],
+    vertex_cov_xyz: Matrix3x3,
+    vertex_time: float,
+    vertex_sigma_time: float,
+    candidate_p4: LorentzVector,
+    pv: PrimaryVertex,
+    speed_of_light: float = C_LIGHT_MM_PER_NS,
+) -> tuple[float, float, float]:
+    """Return `(time_residual, time_chi2, flight_time)` for one composite-PV pair.
+
+    The residual compares the PV measured time against the composite time
+    propagated back from the composite vertex to the PV using
+    `flight_time = L / (beta * c)` with `L` projected along candidate momentum.
+    """
+    direction = _unit_candidate_direction(candidate_p4)
+    beta = _candidate_beta(candidate_p4)
+    displacement = (
+        vertex_xyz[0] - pv.x,
+        vertex_xyz[1] - pv.y,
+        vertex_xyz[2] - pv.z,
+    )
+    flight_length = dot3(displacement, direction)
+    flight_time = 0.0
+    sigma_flight2 = 0.0
+    beta_c = beta * speed_of_light
+    if beta_c > 0.0:
+        flight_time = flight_length / beta_c
+        combined_cov = _sum_cov3(vertex_cov_xyz, pv.cov3)
+        sigma_length2 = _directional_variance(direction, combined_cov)
+        sigma_flight2 = sigma_length2 / (beta_c * beta_c)
+    t_at_pv = vertex_time - flight_time
+    residual = t_at_pv - pv.time
+    sigma2 = (
+        max(vertex_sigma_time, 0.0) ** 2
+        + max(pv.sigma_time, 0.0) ** 2
+        + max(sigma_flight2, 0.0)
+    )
+    if sigma2 <= 0.0:
+        return residual, residual * residual, flight_time
+    return residual, (residual * residual) / sigma2, flight_time
+
+
 def pair_kinematics(p4: LorentzVector) -> tuple[float, float]:
     """Return `(pt, eta)` from a candidate 4-vector."""
     pt = math.sqrt(p4.px * p4.px + p4.py * p4.py)
@@ -458,3 +615,53 @@ def _euclidean_spread(vertices_xy: list[tuple[float, float]], mean: tuple[float,
         dy = y - mean[1]
         chi2 += dx * dx + dy * dy
     return chi2
+
+
+def _unit_candidate_direction(candidate_p4: LorentzVector) -> tuple[float, float, float]:
+    """Return unit momentum direction from candidate Lorentz vector."""
+    norm = math.sqrt(candidate_p4.px * candidate_p4.px + candidate_p4.py * candidate_p4.py + candidate_p4.pz * candidate_p4.pz)
+    if norm <= 1e-16:
+        return (0.0, 0.0, 1.0)
+    return (
+        candidate_p4.px / norm,
+        candidate_p4.py / norm,
+        candidate_p4.pz / norm,
+    )
+
+
+def _candidate_beta(candidate_p4: LorentzVector) -> float:
+    """Compute composite beta from candidate momentum and invariant mass."""
+    p = math.sqrt(candidate_p4.p2)
+    m = abs(candidate_p4.mass)
+    energy = math.sqrt(p * p + m * m)
+    if energy <= 0.0:
+        return 0.0
+    beta = p / energy
+    if beta < 0.0:
+        return 0.0
+    if beta > 1.0:
+        return 1.0
+    return beta
+
+
+def _sum_cov3(a: Matrix3x3, b: Matrix3x3) -> Matrix3x3:
+    """Return element-wise sum of two 3x3 covariance matrices."""
+    return (
+        (a[0][0] + b[0][0], a[0][1] + b[0][1], a[0][2] + b[0][2]),
+        (a[1][0] + b[1][0], a[1][1] + b[1][1], a[1][2] + b[1][2]),
+        (a[2][0] + b[2][0], a[2][1] + b[2][1], a[2][2] + b[2][2]),
+    )
+
+
+def _directional_variance(direction: tuple[float, float, float], cov: Matrix3x3) -> float:
+    """Project a 3x3 covariance matrix onto a unit 3D direction."""
+    ux, uy, uz = direction
+    var = (
+        ux * ux * cov[0][0]
+        + uy * uy * cov[1][1]
+        + uz * uz * cov[2][2]
+        + 2.0 * ux * uy * cov[0][1]
+        + 2.0 * ux * uz * cov[0][2]
+        + 2.0 * uy * uz * cov[1][2]
+    )
+    return max(var, 0.0)

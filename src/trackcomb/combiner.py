@@ -1,6 +1,8 @@
 """High-level combination engine for event tracks and PV hypotheses."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from dataclasses import dataclass
 from typing import Sequence
@@ -17,6 +19,7 @@ from .models import (
 )
 from .physics import (
     C_LIGHT_MM_PER_NS,
+    associate_composite_to_pvs,
     fit_vertex_time,
     fit_vertex_xyz_t,
     min_impact_parameter_to_pvs,
@@ -109,9 +112,8 @@ class ParticleCombiner:
             track_min_ip_chi2: dict[str, float] = {}
             track_charges: dict[str, int] = {}
             track_pid_info: dict[str, dict[str, float | bool]] = {}
-            best_pv_counts: dict[str, int] = {}
             for track in combo_tracks:
-                ip, ip_chi2, pv_id = min_impact_parameter_to_pvs(track, pvs)
+                ip, ip_chi2, _ = min_impact_parameter_to_pvs(track, pvs)
                 track_min_ip[track.track_id] = ip
                 track_min_ip_chi2[track.track_id] = ip_chi2
                 track_charges[track.track_id] = int(track.charge)
@@ -125,9 +127,6 @@ class ParticleCombiner:
                     "hasCALO": track.has_calo,
                     "caloDLL_e": track.calo_dll_e,
                 }
-                if pv_id is not None:
-                    best_pv_counts[pv_id] = best_pv_counts.get(pv_id, 0) + 1
-            best_pv_id = max(best_pv_counts, key=best_pv_counts.get) if best_pv_counts else None
             charge_pattern = "".join("+" if t.charge > 0 else "-" if t.charge < 0 else "0" for t in combo_tracks)
             total_charge = sum(int(t.charge) for t in combo_tracks)
             if cuts.allowed_charge_patterns is not None and charge_pattern not in cuts.allowed_charge_patterns:
@@ -181,6 +180,27 @@ class ParticleCombiner:
                 if cuts.max_pair_eta is not None and pair_eta > cuts.max_pair_eta:
                     continue
 
+                composite_pv_associations = associate_composite_to_pvs(
+                    vertex_xyz=fit.vertex_xyz,
+                    vertex_cov_xyz=fit.cov_xyz,
+                    vertex_time=time_fit.vertex_time,
+                    vertex_sigma_time=time_fit.sigma_time,
+                    candidate_p4=p4,
+                    pvs=pvs,
+                    speed_of_light=self.speed_of_light,
+                )
+                if cuts.max_composite_pv_time_chi2 is not None:
+                    preselected_associations = [
+                        assoc
+                        for assoc in composite_pv_associations
+                        if assoc.time_chi2 <= cuts.max_composite_pv_time_chi2
+                    ]
+                else:
+                    preselected_associations = composite_pv_associations
+                if not preselected_associations:
+                    continue
+                best_association = min(preselected_associations, key=lambda assoc: assoc.ip)
+
                 results.append(
                     CombinationResult(
                         track_ids=tuple(t.track_id for t in combo_tracks),
@@ -206,7 +226,13 @@ class ParticleCombiner:
                         pair_eta=pair_eta,
                         source_track_ids=tuple(source_track_ids),
                         event_id=event_id,
-                        best_pv_id=best_pv_id,
+                        best_pv_id=best_association.pv_id,
+                        preselected_pv_ids=tuple(assoc.pv_id for assoc in preselected_associations),
+                        composite_min_ip=best_association.ip,
+                        composite_min_ip_chi2=best_association.ip_chi2,
+                        composite_pv_time_chi2=best_association.time_chi2,
+                        composite_pv_time_residual=best_association.time_residual,
+                        composite_pv_flight_time=best_association.flight_time,
                     )
                 )
         return results

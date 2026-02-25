@@ -10,6 +10,8 @@ This module defines:
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import math
 from dataclasses import dataclass
@@ -187,6 +189,12 @@ class CombinationResult:
     source_track_ids: tuple[str, ...]
     event_id: str | None = None
     best_pv_id: str | None = None
+    preselected_pv_ids: tuple[str, ...] = ()
+    composite_min_ip: float | None = None
+    composite_min_ip_chi2: float | None = None
+    composite_pv_time_chi2: float | None = None
+    composite_pv_time_residual: float | None = None
+    composite_pv_flight_time: float | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +221,7 @@ class CombinationCuts:
     max_pair_pt: float | None = None
     min_pair_eta: float | None = None
     max_pair_eta: float | None = None
+    max_composite_pv_time_chi2: float | None = None
     allowed_charge_patterns: tuple[str, ...] | None = None
 
 

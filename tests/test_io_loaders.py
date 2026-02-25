@@ -1,6 +1,8 @@
 """Unit tests for JSON input loader helpers."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import json
 import tempfile

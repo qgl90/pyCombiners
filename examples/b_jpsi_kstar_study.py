@@ -7,6 +7,8 @@ It performs pandas-based studies and writes summary plots for composite masses.
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import argparse
 import json

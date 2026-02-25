@@ -5,6 +5,8 @@ Run from repository root without installation:
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from pathlib import Path
 

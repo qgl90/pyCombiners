@@ -5,6 +5,8 @@ is reused as an input "track" for a higher-level combination.
 """
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from typing import Sequence
 

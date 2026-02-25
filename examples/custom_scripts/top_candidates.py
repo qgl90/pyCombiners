@@ -1,6 +1,8 @@
 """Example custom callback: rank candidates and persist top-N summary."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import json
 from pathlib import Path

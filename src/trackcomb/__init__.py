@@ -1,4 +1,6 @@
 """Public package exports for the particle-combination framework."""
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 from .combiner import ParticleCombiner, TrackCombiner
 from .composite import combination_to_track_state

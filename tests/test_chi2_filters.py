@@ -1,6 +1,8 @@
 """Unit tests for candidate-level chi2-based filtering behavior."""
 
 from __future__ import annotations
+__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
 
 import unittest
 
