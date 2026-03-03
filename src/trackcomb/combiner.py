@@ -5,7 +5,7 @@ __author__ = "Renato Quagliani <rquaglia@cern.ch>"
 
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 from .models import (
     CombinationCuts,
@@ -17,6 +17,7 @@ from .models import (
     TrackState,
     iter_n_body_combinations,
 )
+from .composite import combination_to_track_state
 from .physics import (
     C_LIGHT_MM_PER_NS,
     associate_composite_to_pvs,
@@ -91,8 +92,22 @@ class ParticleCombiner:
         cuts = cuts or CombinationCuts()
         self._validate_charge_patterns(cuts.allowed_charge_patterns, n_body)
 
+        return self._combine_tuples(
+            iter_n_body_combinations(selected_tracks, n_body),
+            pvs, valid_hypotheses, cuts, event_id,
+        )
+
+    def _combine_tuples(
+        self,
+        candidate_iter: Iterable[tuple[TrackState, ...]],
+        pvs: list[PrimaryVertex],
+        valid_hypotheses: list[tuple[ParticleHypothesis, ...]],
+        cuts: CombinationCuts,
+        event_id: str | None,
+    ) -> list[CombinationResult]:
+        """Process pre-enumerated candidate tuples through vertex-fit and cut pipeline."""
         results: list[CombinationResult] = []
-        for combo in iter_n_body_combinations(selected_tracks, n_body):
+        for combo in candidate_iter:
             combo_tracks = list(combo)
             # Geometry-only fit: the vertex position is solved once per track tuple.
             fit = fit_vertex_xyz_t(
@@ -201,40 +216,47 @@ class ParticleCombiner:
                     continue
                 best_association = min(preselected_associations, key=lambda assoc: assoc.ip)
 
-                results.append(
-                    CombinationResult(
-                        track_ids=tuple(t.track_id for t in combo_tracks),
-                        masses=masses,
-                        particle_hypotheses=tuple(h.name for h in hypotheses),
-                        vertex_xyz=fit.vertex_xyz,
-                        vertex_cov_xyz=fit.cov_xyz,
-                        vertex_time=time_fit.vertex_time,
-                        vertex_sigma_time=time_fit.sigma_time,
-                        vertices_xy=vertices_xy,
-                        candidate_p4=p4,
-                        vertex_chi2=fit.spatial_chi2,
-                        vertex_time_chi2=time_fit.chi2,
-                        pair_time_chi2=pair_time,
-                        doca_pairs=doca_pairs,
-                        track_min_ip=track_min_ip,
-                        track_min_ip_chi2=track_min_ip_chi2,
-                        track_charges=track_charges,
-                        track_pid_info=track_pid_info,
-                        charge_pattern=charge_pattern,
-                        total_charge=total_charge,
-                        pair_pt=pair_pt,
-                        pair_eta=pair_eta,
-                        source_track_ids=tuple(source_track_ids),
-                        event_id=event_id,
-                        best_pv_id=best_association.pv_id,
-                        preselected_pv_ids=tuple(assoc.pv_id for assoc in preselected_associations),
-                        composite_min_ip=best_association.ip,
-                        composite_min_ip_chi2=best_association.ip_chi2,
-                        composite_pv_time_chi2=best_association.time_chi2,
-                        composite_pv_time_residual=best_association.time_residual,
-                        composite_pv_flight_time=best_association.flight_time,
-                    )
+                src_ids = tuple(source_track_ids)
+                result = CombinationResult(
+                    track_ids=tuple(t.track_id for t in combo_tracks),
+                    masses=masses,
+                    particle_hypotheses=tuple(h.name for h in hypotheses),
+                    vertex_xyz=fit.vertex_xyz,
+                    vertex_cov_xyz=fit.cov_xyz,
+                    vertex_time=time_fit.vertex_time,
+                    vertex_sigma_time=time_fit.sigma_time,
+                    vertices_xy=vertices_xy,
+                    candidate_p4=p4,
+                    vertex_chi2=fit.spatial_chi2,
+                    vertex_time_chi2=time_fit.chi2,
+                    pair_time_chi2=pair_time,
+                    doca_pairs=doca_pairs,
+                    track_min_ip=track_min_ip,
+                    track_min_ip_chi2=track_min_ip_chi2,
+                    track_charges=track_charges,
+                    track_pid_info=track_pid_info,
+                    charge_pattern=charge_pattern,
+                    total_charge=total_charge,
+                    pair_pt=pair_pt,
+                    pair_eta=pair_eta,
+                    source_track_ids=src_ids,
+                    event_id=event_id,
+                    best_pv_id=best_association.pv_id,
+                    preselected_pv_ids=tuple(assoc.pv_id for assoc in preselected_associations),
+                    composite_min_ip=best_association.ip,
+                    composite_min_ip_chi2=best_association.ip_chi2,
+                    composite_pv_time_chi2=best_association.time_chi2,
+                    composite_pv_time_residual=best_association.time_residual,
+                    composite_pv_flight_time=best_association.flight_time,
                 )
+                # Compute composite TrackState for hierarchical combining.
+                # Use object.__setattr__ because CombinationResult is frozen.
+                ct = combination_to_track_state(
+                    result, combo_tracks,
+                    track_id=f"composite_{'_'.join(t.track_id for t in combo_tracks)}",
+                )
+                object.__setattr__(result, "composite_track", ct)
+                results.append(result)
         return results
 
     def combine_events(

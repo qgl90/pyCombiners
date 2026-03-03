@@ -14,9 +14,9 @@ __author__ = "Renato Quagliani <rquaglia@cern.ch>"
 
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import combinations
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 
 Matrix2x2 = tuple[tuple[float, float], tuple[float, float]]
 Matrix3x3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
@@ -57,6 +57,7 @@ class TrackState:
     has_calo: bool = False
     calo_dll_e: float = 0.0
     source_track_ids: tuple[str, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def extrapolate(self, z_target: float) -> tuple[float, float]:
         """Linearly extrapolate x/y to a target z coordinate."""
@@ -195,6 +196,7 @@ class CombinationResult:
     composite_pv_time_chi2: float | None = None
     composite_pv_time_residual: float | None = None
     composite_pv_flight_time: float | None = None
+    composite_track: "TrackState | None" = None
 
 
 @dataclass(frozen=True)
