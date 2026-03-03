@@ -12,3 +12,5 @@ analysis_table.csv
 summary.json
 top_candidates.json
 selected_candidates.json
+.*
+input

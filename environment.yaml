@@ -1,0 +1,34 @@
+name: thesis-plots
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.10,<3.13
+  # Config
+  - pyyaml
+  # Data I/O
+  - uproot
+  - awkward
+  # Numerics
+  - numpy
+  - scipy
+  - pandas
+  # Plotting
+  - matplotlib
+  - mplhep
+  - mscorefonts
+  - root
+  # Histogram utilities
+  - hist
+  - boost-histogram
+  # Particle data
+  - particle
+  # Workflow
+  - snakemake-minimal
+  # Dev
+  - pip:
+    - pymupdf
+  # format
+  - yapf==0.24.0
+  - clang-format
+

@@ -1,14 +1,27 @@
-"""Input/output helpers for JSON inputs and tabular result export."""
+"""Input/output helpers for JSON inputs, ROOT inputs, and tabular result export."""
 
 from __future__ import annotations
 __author__ = "Renato Quagliani <rquaglia@cern.ch>"
 
 
 import json
+import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Sequence
 
-from .models import CombinationResult, EventInput, ParticleHypothesis, PrimaryVertex, TrackState
+try:
+    from tqdm import tqdm as _tqdm
+except ImportError:  # pragma: no cover
+    _tqdm = None
+
+
+def _progress(iterable, **kwargs):
+    """Wrap an iterable with tqdm if available, otherwise pass through."""
+    if _tqdm is not None:
+        return _tqdm(iterable, **kwargs)
+    return iterable
+
+from .models import CombinationResult, EventInput, Matrix4x4, ParticleHypothesis, PrimaryVertex, TrackState
 from .pid import particle_hypothesis_from_name
 
 
@@ -181,6 +194,495 @@ def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
             row[f"trk{idx}_caloDLL_e"] = pid.get("caloDLL_e")
         rows.append(row)
     return rows
+
+
+def load_tracks_root(
+    path: str | Path,
+    tree_name: str = "BestLongTracks/TrackTuple",
+    max_events: int | None = None,
+    track_type: str = "long",
+) -> list[tuple[str, list[TrackState]]]:
+    """Load tracks per event from a ROOT TTree.
+
+    Returns a list of ``(event_id, tracks)`` tuples, one per TTree entry.
+
+    Parameters
+    ----------
+    path : str or Path
+        Path to the ROOT file.
+    tree_name : str
+        ``"directory/tree"`` path inside the file.
+    max_events : int or None
+        If set, read at most this many entries.
+    track_type : str
+        Prefix used in track IDs (e.g. ``"long"`` → ``evt0_long3``).
+    """
+    uproot, ak = _require_uproot()
+    tree = uproot.open(f"{path}:{tree_name}")
+
+    # -- branches to read ------------------------------------------------
+    track_branches = [
+        "FirstMeasurement_x", "FirstMeasurement_y", "FirstMeasurement_z",
+        "FirstMeasurement_tx", "FirstMeasurement_ty", "FirstMeasurement_qop",
+    ]
+    cov_branches = [
+        f"FirstMeasurement_cov_{i}_{j}"
+        for i in range(5) for j in range(i + 1)
+    ]
+    hit_branches = ["TVHits_z", "TVHits_t"]
+    mc_branches = [
+        "MC_truth", "MC_pid",
+        "MC_key",
+        "MC_px", "MC_py", "MC_pz", "MC_pe", "MC_charge",
+        "MC_ovtx_x", "MC_ovtx_y", "MC_ovtx_z",
+    ]
+    mc_jagged_branches = ["MC_ancestor_pids", "MC_ancestor_keys"]
+    event_branches = ["EventNumber", "RunNumber"]
+
+    all_branches = track_branches + cov_branches + hit_branches + mc_branches + mc_jagged_branches + event_branches
+    entry_stop = max_events if max_events is not None else None
+    data = tree.arrays(expressions=all_branches, library="ak", entry_stop=entry_stop)
+
+    # Convert all awkward arrays to Python lists in one pass (C-level bulk conversion).
+    # This avoids per-element awkward indexing which dominates the runtime.
+    py = {br: data[br].tolist() for br in all_branches}
+
+    n_entries = len(py["EventNumber"])
+    result: list[tuple[str, list[TrackState]]] = []
+
+    # Pre-build covariance index pairs
+    _cov_ij = [(i, j) for i in range(5) for j in range(i + 1)]
+    _int_mc = {"MC_truth", "MC_pid", "MC_key"}
+
+    for entry_idx in _progress(range(n_entries), desc="Loading tracks", total=n_entries):
+        evt_num = int(py["EventNumber"][entry_idx])
+        run_num = int(py["RunNumber"][entry_idx])
+        event_id = f"run{run_num}_evt{evt_num}_idx{entry_idx}"
+
+        qop_arr = py["FirstMeasurement_qop"][entry_idx]
+        n_tracks = len(qop_arr)
+        tracks: list[TrackState] = []
+
+        # Pre-fetch event-level lists (Python list indexing is ~10x faster than awkward)
+        ev_x = py["FirstMeasurement_x"][entry_idx]
+        ev_y = py["FirstMeasurement_y"][entry_idx]
+        ev_z = py["FirstMeasurement_z"][entry_idx]
+        ev_tx = py["FirstMeasurement_tx"][entry_idx]
+        ev_ty = py["FirstMeasurement_ty"][entry_idx]
+        ev_cov = {(i, j): py[f"FirstMeasurement_cov_{i}_{j}"][entry_idx]
+                  for i, j in _cov_ij}
+        ev_hz = py["TVHits_z"][entry_idx]
+        ev_ht = py["TVHits_t"][entry_idx]
+        ev_mc = {k: py[k][entry_idx] for k in mc_branches}
+        ev_mc_jag = {k: py[k][entry_idx] for k in mc_jagged_branches}
+
+        for ti in range(n_tracks):
+            qop = qop_arr[ti]
+            if qop == 0.0:
+                continue
+            p_mev = 1.0 / abs(qop)
+            charge = 1 if qop > 0 else -1
+
+            x = ev_x[ti]
+            y = ev_y[ti]
+            z = ev_z[ti]
+            tx = ev_tx[ti]
+            ty = ev_ty[ti]
+
+            # Reconstruct symmetric 4x4 covariance from lower-triangular elements
+            cov_vals = {ij: ev_cov[ij][ti] for ij in _cov_ij}
+            cov4 = _build_sym_cov4(cov_vals)
+
+            # Fit track t0 from TV hits (uses MeV internally)
+            time, sigma_time = _fit_track_t0(z, tx, ty, p_mev, ev_hz[ti], ev_ht[ti])
+
+            # MC truth metadata
+            metadata: dict[str, Any] = {}
+            for mc_key in mc_branches:
+                val = ev_mc[mc_key][ti]
+                metadata[mc_key.lower()] = int(val) if mc_key in _int_mc else val
+            for jb in mc_jagged_branches:
+                metadata[jb.lower()] = [int(v) for v in ev_mc_jag[jb][ti]]
+
+            # Convert momentum to GeV to match framework convention
+            p_gev = p_mev / 1000.0
+
+            track_id = f"evt{entry_idx}_{track_type}{ti}"
+            tracks.append(TrackState(
+                track_id=track_id,
+                z=z, x=x, y=y, tx=tx, ty=ty,
+                time=time,
+                cov4=cov4,
+                sigma_time=sigma_time,
+                p=p_gev,
+                charge=charge,
+                source_track_ids=(track_id,),
+                metadata=metadata,
+            ))
+
+        result.append((event_id, tracks))
+
+    return result
+
+
+def load_pvs_root(
+    path: str | Path,
+    tree_name: str = "BestLongTracks/TrackTuple",
+    max_events: int | None = None,
+) -> list[tuple[str, list[PrimaryVertex]]]:
+    """Load primary vertices per event from a ROOT TTree.
+
+    Returns a list of ``(event_id, pvs)`` tuples, one per TTree entry.
+    """
+    uproot, _ak = _require_uproot()
+    tree = uproot.open(f"{path}:{tree_name}")
+
+    pv_branches = [
+        "PV_x", "PV_y", "PV_z", "PV_t",
+        "PV_cov_0_0", "PV_cov_1_0", "PV_cov_1_1",
+        "PV_cov_2_0", "PV_cov_2_1", "PV_cov_2_2",
+        "PV_cov_3_3",
+    ]
+    event_branches = ["EventNumber", "RunNumber"]
+    entry_stop = max_events if max_events is not None else None
+    data = tree.arrays(
+        expressions=pv_branches + event_branches,
+        library="ak",
+        entry_stop=entry_stop,
+    )
+
+    # Bulk convert awkward → Python lists
+    py = {br: data[br].tolist() for br in pv_branches + event_branches}
+
+    result: list[tuple[str, list[PrimaryVertex]]] = []
+    for entry_idx in _progress(range(len(py["PV_x"])), desc="Loading PVs", total=len(py["PV_x"])):
+        evt_num = int(py["EventNumber"][entry_idx])
+        run_num = int(py["RunNumber"][entry_idx])
+        event_id = f"run{run_num}_evt{evt_num}_idx{entry_idx}"
+        ev_x = py["PV_x"][entry_idx]
+        ev_y = py["PV_y"][entry_idx]
+        ev_z = py["PV_z"][entry_idx]
+        ev_t = py["PV_t"][entry_idx]
+        ev_c00 = py["PV_cov_0_0"][entry_idx]
+        ev_c10 = py["PV_cov_1_0"][entry_idx]
+        ev_c11 = py["PV_cov_1_1"][entry_idx]
+        ev_c20 = py["PV_cov_2_0"][entry_idx]
+        ev_c21 = py["PV_cov_2_1"][entry_idx]
+        ev_c22 = py["PV_cov_2_2"][entry_idx]
+        ev_c33 = py["PV_cov_3_3"][entry_idx]
+        pvs: list[PrimaryVertex] = []
+        for pi in range(len(ev_x)):
+            c00, c10, c11 = ev_c00[pi], ev_c10[pi], ev_c11[pi]
+            c20, c21, c22 = ev_c20[pi], ev_c21[pi], ev_c22[pi]
+            pvs.append(PrimaryVertex(
+                pv_id=f"evt{entry_idx}_pv{pi}",
+                x=ev_x[pi], y=ev_y[pi], z=ev_z[pi],
+                cov3=((c00, c10, c20), (c10, c11, c21), (c20, c21, c22)),
+                time=ev_t[pi],
+                sigma_time=math.sqrt(max(ev_c33[pi], 0.0)),
+            ))
+        result.append((event_id, pvs))
+    return result
+
+
+def iter_events_root(
+    path: str | Path,
+    tree_name: str = "BestLongTracks/TrackTuple",
+    max_events: int | None = None,
+    track_type: str = "long",
+    chunk_size: int = 100,
+) -> Iterator[EventInput]:
+    """Yield ``EventInput`` objects from a ROOT TTree, reading in chunks.
+
+    Reads tracks and PVs in a single pass.  Only one chunk of events is
+    held in memory at a time, so this works for arbitrarily large files.
+
+    Parameters
+    ----------
+    chunk_size : int
+        Number of TTree entries to read per chunk (default 100).
+    """
+    uproot, ak = _require_uproot()
+    tree = uproot.open(f"{path}:{tree_name}")
+
+    # -- all branches in a single read -----------------------------------
+    track_branches = [
+        "FirstMeasurement_x", "FirstMeasurement_y", "FirstMeasurement_z",
+        "FirstMeasurement_tx", "FirstMeasurement_ty", "FirstMeasurement_qop",
+    ]
+    cov_branches = [
+        f"FirstMeasurement_cov_{i}_{j}"
+        for i in range(5) for j in range(i + 1)
+    ]
+    hit_branches = ["TVHits_z", "TVHits_t"]
+    mc_branches = [
+        "MC_truth", "MC_pid", "MC_key",
+        "MC_px", "MC_py", "MC_pz", "MC_pe", "MC_charge",
+        "MC_ovtx_x", "MC_ovtx_y", "MC_ovtx_z",
+    ]
+    mc_jagged_branches = ["MC_ancestor_pids", "MC_ancestor_keys"]
+    pv_branches = [
+        "PV_x", "PV_y", "PV_z", "PV_t",
+        "PV_cov_0_0", "PV_cov_1_0", "PV_cov_1_1",
+        "PV_cov_2_0", "PV_cov_2_1", "PV_cov_2_2",
+        "PV_cov_3_3",
+    ]
+    event_branches = ["EventNumber", "RunNumber"]
+    all_branches = (
+        track_branches + cov_branches + hit_branches
+        + mc_branches + mc_jagged_branches
+        + pv_branches + event_branches
+    )
+
+    _cov_ij = [(i, j) for i in range(5) for j in range(i + 1)]
+    _int_mc = {"MC_truth", "MC_pid", "MC_key"}
+
+    import numpy as np
+
+    entry_stop = max_events if max_events is not None else None
+    global_idx = 0
+
+    for chunk in tree.iterate(
+        expressions=all_branches, library="ak",
+        step_size=chunk_size, entry_stop=entry_stop,
+    ):
+        # Bulk convert chunk to Python lists (one C-level call per branch)
+        py = {br: chunk[br].tolist() for br in all_branches}
+        n_chunk = len(py["EventNumber"])
+
+        for local_idx in range(n_chunk):
+            entry_idx = global_idx + local_idx
+            evt_num = int(py["EventNumber"][local_idx])
+            run_num = int(py["RunNumber"][local_idx])
+            event_id = f"run{run_num}_evt{evt_num}_idx{entry_idx}"
+
+            # -- Build tracks (SoA → vectorized numpy → AoS TrackState) --
+            qop_list = py["FirstMeasurement_qop"][local_idx]
+            n_tracks = len(qop_list)
+
+            if n_tracks == 0:
+                tracks: list[TrackState] = []
+            else:
+                qop_np = np.array(qop_list)
+                valid = qop_np != 0.0
+                valid_idx = np.where(valid)[0]
+                n_valid = len(valid_idx)
+
+                if n_valid == 0:
+                    tracks = []
+                else:
+                    # Vectorised scalar computation (numpy, all valid tracks at once)
+                    qop_v = qop_np[valid]
+                    p_mev = 1.0 / np.abs(qop_v)
+                    charges = np.where(qop_v > 0, 1, -1)
+                    x_np = np.array(py["FirstMeasurement_x"][local_idx])[valid]
+                    y_np = np.array(py["FirstMeasurement_y"][local_idx])[valid]
+                    z_np = np.array(py["FirstMeasurement_z"][local_idx])[valid]
+                    tx_np = np.array(py["FirstMeasurement_tx"][local_idx])[valid]
+                    ty_np = np.array(py["FirstMeasurement_ty"][local_idx])[valid]
+                    p_gev = p_mev / 1000.0
+
+                    # Vectorised t0 fitting (per-track numpy over hits)
+                    slope = np.sqrt(1.0 + tx_np ** 2 + ty_np ** 2)
+                    energy = np.sqrt(p_mev ** 2 + _PION_MASS_MEV ** 2)
+                    beta_c = (p_mev / energy) * _C_LIGHT_MM_PER_NS
+
+                    ev_hz = py["TVHits_z"][local_idx]
+                    ev_ht = py["TVHits_t"][local_idx]
+                    time_all = np.zeros(n_valid)
+                    sigma_time_all = np.full(n_valid, 1e9)
+                    for i, ti in enumerate(valid_idx):
+                        hz = ev_hz[ti]
+                        ht = ev_ht[ti]
+                        if not hz:
+                            continue
+                        hz_np = np.array(hz)
+                        ht_np = np.array(ht)
+                        good = ~(np.isnan(hz_np) | np.isnan(ht_np))
+                        hz_np, ht_np = hz_np[good], ht_np[good]
+                        n_h = len(hz_np)
+                        if n_h == 0:
+                            continue
+                        t0 = ht_np - (hz_np - z_np[i]) * slope[i] / beta_c[i]
+                        time_all[i] = t0.mean()
+                        if n_h > 1:
+                            sigma_time_all[i] = max(t0.std() / math.sqrt(n_h), 1e-12)
+
+                    # Covariance (Python lists, indexed)
+                    ev_cov = {ij: py[f"FirstMeasurement_cov_{ij[0]}_{ij[1]}"][local_idx]
+                              for ij in _cov_ij}
+                    ev_mc = {k: py[k][local_idx] for k in mc_branches}
+                    ev_mc_jag = {k: py[k][local_idx] for k in mc_jagged_branches}
+
+                    # Construct TrackState objects
+                    tracks = []
+                    for i in range(n_valid):
+                        ti = int(valid_idx[i])
+                        cov_vals = {ij: ev_cov[ij][ti] for ij in _cov_ij}
+                        cov4 = _build_sym_cov4(cov_vals)
+                        metadata: dict[str, Any] = {}
+                        for mc_key in mc_branches:
+                            val = ev_mc[mc_key][ti]
+                            metadata[mc_key.lower()] = int(val) if mc_key in _int_mc else val
+                        for jb in mc_jagged_branches:
+                            metadata[jb.lower()] = [int(v) for v in ev_mc_jag[jb][ti]]
+
+                        track_id = f"evt{entry_idx}_{track_type}{ti}"
+                        tracks.append(TrackState(
+                            track_id=track_id,
+                            z=float(z_np[i]), x=float(x_np[i]), y=float(y_np[i]),
+                            tx=float(tx_np[i]), ty=float(ty_np[i]),
+                            time=float(time_all[i]), cov4=cov4,
+                            sigma_time=float(sigma_time_all[i]),
+                            p=float(p_gev[i]), charge=int(charges[i]),
+                            source_track_ids=(track_id,),
+                            metadata=metadata,
+                        ))
+
+            # -- Build PVs --
+            ev_pvx = py["PV_x"][local_idx]
+            ev_pvy = py["PV_y"][local_idx]
+            ev_pvz = py["PV_z"][local_idx]
+            ev_pvt = py["PV_t"][local_idx]
+            ev_c00 = py["PV_cov_0_0"][local_idx]
+            ev_c10 = py["PV_cov_1_0"][local_idx]
+            ev_c11 = py["PV_cov_1_1"][local_idx]
+            ev_c20 = py["PV_cov_2_0"][local_idx]
+            ev_c21 = py["PV_cov_2_1"][local_idx]
+            ev_c22 = py["PV_cov_2_2"][local_idx]
+            ev_c33 = py["PV_cov_3_3"][local_idx]
+            pvs: list[PrimaryVertex] = []
+            for pi in range(len(ev_pvx)):
+                c00, c10, c11 = ev_c00[pi], ev_c10[pi], ev_c11[pi]
+                c20, c21, c22 = ev_c20[pi], ev_c21[pi], ev_c22[pi]
+                pvs.append(PrimaryVertex(
+                    pv_id=f"evt{entry_idx}_pv{pi}",
+                    x=ev_pvx[pi], y=ev_pvy[pi], z=ev_pvz[pi],
+                    cov3=((c00, c10, c20), (c10, c11, c21), (c20, c21, c22)),
+                    time=ev_pvt[pi],
+                    sigma_time=math.sqrt(max(ev_c33[pi], 0.0)),
+                ))
+
+            yield EventInput(
+                event_id=event_id,
+                tracks=tuple(tracks),
+                primary_vertices=tuple(pvs),
+            )
+
+        global_idx += n_chunk
+
+
+def load_events_root(
+    path: str | Path,
+    tree_name: str = "BestLongTracks/TrackTuple",
+    max_events: int | None = None,
+    track_type: str = "long",
+) -> list[EventInput]:
+    """Load tracks and PVs from a ROOT TTree in a single call.
+
+    Returns a list of ``EventInput`` objects with aligned tracks and PVs.
+    For large files, prefer ``iter_events_root()`` which streams events
+    and uses bounded memory.
+    """
+    return list(iter_events_root(path, tree_name, max_events=max_events, track_type=track_type))
+
+
+# -- ROOT helpers --------------------------------------------------------
+
+
+def _require_uproot():
+    """Import uproot and awkward lazily."""
+    try:
+        import uproot  # type: ignore
+        import awkward as ak  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            "uproot and awkward are required to read ROOT files. "
+            "Install them with: pip install 'track-combination-framework[root]'"
+        ) from exc
+    return uproot, ak
+
+
+_C_LIGHT_MM_PER_NS = 299.792458
+_PION_MASS_MEV = 139.57039
+
+
+def _fit_track_t0(
+    z_first: float,
+    tx: float,
+    ty: float,
+    p: float,
+    hit_z: Sequence[float],
+    hit_t: Sequence[float],
+    mass: float = _PION_MASS_MEV,
+    c: float = _C_LIGHT_MM_PER_NS,
+    weights: Sequence[float] | None = None,
+) -> tuple[float, float]:
+    """Fit track t0 at ``z_first`` from hit times using time-of-flight correction.
+
+    Each hit time is propagated back to ``z_first`` via
+    ``t0_i = t_hit_i - path_i / (beta * c)`` where path uses the track slopes
+    and beta is computed under the given mass hypothesis.
+
+    Parameters
+    ----------
+    weights : optional
+        Per-hit weights for the average. ``None`` uses equal weights.
+
+    Returns ``(time, sigma_time)``.
+    """
+    if not hit_z or not hit_t:
+        return 0.0, 1e9
+
+    slope_factor = math.sqrt(1.0 + tx * tx + ty * ty)
+    energy = math.sqrt(p * p + mass * mass)
+    beta = p / energy if energy > 0.0 else 1.0
+    beta_c = beta * c
+    if beta_c <= 0.0:
+        return 0.0, 1e9
+
+    t0_values: list[float] = []
+    w_values: list[float] = []
+    for i, (hz, ht) in enumerate(zip(hit_z, hit_t)):
+        if math.isnan(ht) or math.isnan(hz):
+            continue
+        path = (hz - z_first) * slope_factor
+        t0 = ht - path / beta_c
+        t0_values.append(t0)
+        w_values.append(weights[i] if weights is not None else 1.0)
+
+    n = len(t0_values)
+    if n == 0:
+        return 0.0, 1e9
+
+    sum_w = sum(w_values)
+    if sum_w <= 0.0:
+        return 0.0, 1e9
+
+    t0_mean = sum(w * t for w, t in zip(w_values, t0_values)) / sum_w
+
+    if n == 1:
+        return t0_mean, 1e9
+
+    # Standard error of the (weighted) mean
+    var = sum(w * (t - t0_mean) ** 2 for w, t in zip(w_values, t0_values)) / sum_w
+    sigma = math.sqrt(var / n)
+    return t0_mean, max(sigma, 1e-12)
+
+
+def _build_sym_cov4(cov_vals: dict[tuple[int, int], float]) -> Matrix4x4:
+    """Build symmetric 4x4 covariance from lower-triangular elements (indices 0..3)."""
+    def _get(i: int, j: int) -> float:
+        if i >= j:
+            return cov_vals.get((i, j), 0.0)
+        return cov_vals.get((j, i), 0.0)
+
+    return (
+        (_get(0, 0), _get(0, 1), _get(0, 2), _get(0, 3)),
+        (_get(1, 0), _get(1, 1), _get(1, 2), _get(1, 3)),
+        (_get(2, 0), _get(2, 1), _get(2, 2), _get(2, 3)),
+        (_get(3, 0), _get(3, 1), _get(3, 2), _get(3, 3)),
+    )
 
 
 def _require_pandas():
