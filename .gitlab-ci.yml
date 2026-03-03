@@ -1,4 +1,5 @@
 stages:
+  - welcome
   - test
 
 default:
@@ -12,6 +13,10 @@ default:
     - pip install --upgrade pip
     - pip install -e .
 
+hello_world: 
+  stage : welcome
+  script : 
+    - echo "Welcome to pyCombiners"
 unit_tests:
   stage: test
   script:
