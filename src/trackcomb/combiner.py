@@ -20,7 +20,9 @@ from .models import (
 from .composite import combination_to_track_state
 from .physics import (
     C_LIGHT_MM_PER_NS,
+    VertexTimeFitResult,
     associate_composite_to_pvs,
+    compute_dira,
     fit_vertex_time,
     fit_vertex_xyz_t,
     min_impact_parameter_to_pvs,
@@ -43,10 +45,12 @@ class ParticleCombiner:
         tracks: Sequence[TrackState],
         primary_vertices: Sequence[PrimaryVertex],
         preselection: TrackPreselection | None = None,
+        use_timing: bool = True,
     ) -> list[TrackState]:
         """Apply track-level preselection before combinatorics."""
         if preselection is None:
             return list(tracks)
+        _dt_cut = 0.05 if use_timing else None
         out: list[TrackState] = []
         for t in tracks:
             if preselection.min_pt is not None and t.pt < preselection.min_pt:
@@ -56,7 +60,7 @@ class ParticleCombiner:
             if preselection.max_eta is not None and t.eta > preselection.max_eta:
                 continue
             if preselection.min_ip_to_any_pv is not None:
-                min_ip, _, _ = min_impact_parameter_to_pvs(t, list(primary_vertices))
+                min_ip, _, _ = min_impact_parameter_to_pvs(t, list(primary_vertices), max_dt_corrected=_dt_cut)
                 if min_ip < preselection.min_ip_to_any_pv:
                     continue
             out.append(t)
@@ -82,14 +86,16 @@ class ParticleCombiner:
         5. Apply cuts (doca, chi2, mass, pt, eta, charge pattern).
         6. Return accepted `CombinationResult` objects.
         """
-        selected_tracks = self.preselect_tracks(tracks, primary_vertices, preselection)
+        cuts = cuts or CombinationCuts()
+        selected_tracks = self.preselect_tracks(
+            tracks, primary_vertices, preselection, use_timing=cuts.use_timing,
+        )
         if not selected_tracks:
             return []
         pvs = list(primary_vertices)
         if not pvs:
             raise ValueError("At least one primary vertex is required.")
         valid_hypotheses = self._validate_hypotheses(mass_hypotheses, n_body)
-        cuts = cuts or CombinationCuts()
         self._validate_charge_patterns(cuts.allowed_charge_patterns, n_body)
 
         return self._combine_tuples(
@@ -106,6 +112,7 @@ class ParticleCombiner:
         event_id: str | None,
     ) -> list[CombinationResult]:
         """Process pre-enumerated candidate tuples through vertex-fit and cut pipeline."""
+        pv_by_id = {pv.pv_id: pv for pv in pvs}
         results: list[CombinationResult] = []
         for combo in candidate_iter:
             combo_tracks = list(combo)
@@ -127,8 +134,9 @@ class ParticleCombiner:
             track_min_ip_chi2: dict[str, float] = {}
             track_charges: dict[str, int] = {}
             track_pid_info: dict[str, dict[str, float | bool]] = {}
+            _dt_cut = 0.05 if cuts.use_timing else None
             for track in combo_tracks:
-                ip, ip_chi2, _ = min_impact_parameter_to_pvs(track, pvs)
+                ip, ip_chi2, _ = min_impact_parameter_to_pvs(track, pvs, max_dt_corrected=_dt_cut)
                 track_min_ip[track.track_id] = ip
                 track_min_ip_chi2[track.track_id] = ip_chi2
                 track_charges[track.track_id] = int(track.charge)
@@ -158,22 +166,29 @@ class ParticleCombiner:
                 # Timing compatibility is mass-dependent through beta, so this is
                 # evaluated for each hypothesis assignment separately.
                 masses = tuple(h.mass for h in hypotheses)
-                time_fit = fit_vertex_time(
-                    tracks=combo_tracks,
-                    masses=masses,
-                    vertex_xyz=fit.vertex_xyz,
-                    speed_of_light=self.speed_of_light,
-                )
-                pair_time = pairwise_time_chi2(
-                    combo_tracks,
-                    masses=masses,
-                    vertex_xyz=fit.vertex_xyz,
-                    speed_of_light=self.speed_of_light,
-                )
-                if cuts.max_vertex_time_chi2 is not None and time_fit.chi2 > cuts.max_vertex_time_chi2:
-                    continue
-                if cuts.max_pair_time_chi2 is not None and pair_time > cuts.max_pair_time_chi2:
-                    continue
+                if cuts.use_timing:
+                    time_fit = fit_vertex_time(
+                        tracks=combo_tracks,
+                        masses=masses,
+                        vertex_xyz=fit.vertex_xyz,
+                        speed_of_light=self.speed_of_light,
+                    )
+                    pair_time = pairwise_time_chi2(
+                        combo_tracks,
+                        masses=masses,
+                        vertex_xyz=fit.vertex_xyz,
+                        speed_of_light=self.speed_of_light,
+                    )
+                    if cuts.max_vertex_time_chi2 is not None and time_fit.chi2 > cuts.max_vertex_time_chi2:
+                        continue
+                    if cuts.max_pair_time_chi2 is not None and pair_time > cuts.max_pair_time_chi2:
+                        continue
+                else:
+                    time_fit = VertexTimeFitResult(
+                        vertex_time=0.0, sigma_time=0.0, chi2=0.0,
+                        propagated_times=tuple(0.0 for _ in combo_tracks),
+                    )
+                    pair_time = 0.0
 
                 # Candidate four-momentum always follows the active hypothesis tuple.
                 p4 = sum_lorentz(
@@ -204,17 +219,25 @@ class ParticleCombiner:
                     pvs=pvs,
                     speed_of_light=self.speed_of_light,
                 )
-                if cuts.max_composite_pv_time_chi2 is not None:
-                    preselected_associations = [
-                        assoc
-                        for assoc in composite_pv_associations
-                        if assoc.time_chi2 <= cuts.max_composite_pv_time_chi2
-                    ]
-                else:
-                    preselected_associations = composite_pv_associations
+                preselected_associations = composite_pv_associations
+                if cuts.use_timing:
+                    if cuts.max_composite_pv_time_residual is not None:
+                        filtered = [
+                            assoc for assoc in preselected_associations
+                            if abs(assoc.time_residual) <= cuts.max_composite_pv_time_residual
+                        ]
+                        if filtered:
+                            preselected_associations = filtered
+                    if cuts.max_composite_pv_time_chi2 is not None:
+                        preselected_associations = [
+                            assoc for assoc in preselected_associations
+                            if assoc.time_chi2 <= cuts.max_composite_pv_time_chi2
+                        ]
                 if not preselected_associations:
                     continue
                 best_association = min(preselected_associations, key=lambda assoc: assoc.ip)
+                best_pv = pv_by_id[best_association.pv_id]
+                dira_val = compute_dira(fit.vertex_xyz, p4, best_pv)
 
                 src_ids = tuple(source_track_ids)
                 result = CombinationResult(
@@ -248,6 +271,7 @@ class ParticleCombiner:
                     composite_pv_time_chi2=best_association.time_chi2,
                     composite_pv_time_residual=best_association.time_residual,
                     composite_pv_flight_time=best_association.flight_time,
+                    dira=dira_val,
                 )
                 # Compute composite TrackState for hierarchical combining.
                 # Use object.__setattr__ because CombinationResult is frozen.

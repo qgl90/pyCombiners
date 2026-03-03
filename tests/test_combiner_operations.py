@@ -246,27 +246,40 @@ class TestCombinerOperations(unittest.TestCase):
                 sigma_time=0.05,
             ),
         ]
-        [all_pv_result] = ParticleCombiner().combine(
+        # Default cuts include max_composite_pv_time_residual=0.05 ns,
+        # which filters out pv_bad (time=2.0, residual ~1.0 ns) → pv_good selected.
+        [default_result] = ParticleCombiner().combine(
             tracks=tracks,
             primary_vertices=pvs,
             n_body=2,
             mass_hypotheses=[[0.13957, 0.13957]],
         )
-        self.assertEqual(all_pv_result.best_pv_id, "pv_bad")
-        self.assertEqual(all_pv_result.preselected_pv_ids, ("pv_good", "pv_bad"))
+        self.assertEqual(default_result.best_pv_id, "pv_good")
 
+        # Disabling time_residual filter → pure min IP → pv_bad selected.
+        [ip_only_result] = ParticleCombiner().combine(
+            tracks=tracks,
+            primary_vertices=pvs,
+            n_body=2,
+            mass_hypotheses=[[0.13957, 0.13957]],
+            cuts=CombinationCuts(max_composite_pv_time_residual=None),
+        )
+        self.assertEqual(ip_only_result.best_pv_id, "pv_bad")
+        self.assertEqual(ip_only_result.preselected_pv_ids, ("pv_good", "pv_bad"))
+
+        # Explicit time_chi2 cut also selects pv_good.
         [time_selected_result] = ParticleCombiner().combine(
             tracks=tracks,
             primary_vertices=pvs,
             n_body=2,
             mass_hypotheses=[[0.13957, 0.13957]],
-            cuts=CombinationCuts(max_composite_pv_time_chi2=10.0),
+            cuts=CombinationCuts(max_composite_pv_time_chi2=10.0, max_composite_pv_time_residual=None),
         )
         self.assertEqual(time_selected_result.best_pv_id, "pv_good")
         self.assertEqual(time_selected_result.preselected_pv_ids, ("pv_good",))
-        assert all_pv_result.composite_min_ip is not None
+        assert ip_only_result.composite_min_ip is not None
         assert time_selected_result.composite_min_ip is not None
-        self.assertGreater(time_selected_result.composite_min_ip, all_pv_result.composite_min_ip)
+        self.assertGreater(time_selected_result.composite_min_ip, ip_only_result.composite_min_ip)
 
     def test_named_particle_hypotheses_are_accepted(self) -> None:
         """`make_*` particle helpers should be accepted by combiner API."""

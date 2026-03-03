@@ -130,6 +130,17 @@ def write_results_table(path: str | Path, results: list[CombinationResult]) -> N
         )
 
 
+def candidates_to_dataframe(results: list[CombinationResult]) -> "Any":
+    """Convert CombinationResult list to a pandas DataFrame.
+
+    Returns a DataFrame with all combination observables flattened
+    into columns.  Useful for building analysis pipelines that save
+    intermediate candidates to Parquet.
+    """
+    pd = _require_pandas()
+    return pd.DataFrame(_result_rows(results))
+
+
 def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
     """Flatten rich combination objects into DataFrame-ready row dictionaries."""
     rows: list[dict[str, Any]] = []
@@ -170,6 +181,7 @@ def _result_rows(results: list[CombinationResult]) -> list[dict[str, Any]]:
             "composite_pv_time_chi2": res.composite_pv_time_chi2,
             "composite_pv_time_residual": res.composite_pv_time_residual,
             "composite_pv_flight_time": res.composite_pv_flight_time,
+            "dira": res.dira,
         }
         for idx, (x, y) in enumerate(res.vertices_xy):
             row[f"v{idx}_x"] = x
@@ -232,7 +244,7 @@ def load_tracks_root(
     hit_branches = ["TVHits_z", "TVHits_t"]
     mc_branches = [
         "MC_truth", "MC_pid",
-        "MC_key",
+        "MC_key", "MC_pv_key", "MC_fromSignal",
         "MC_px", "MC_py", "MC_pz", "MC_pe", "MC_charge",
         "MC_ovtx_x", "MC_ovtx_y", "MC_ovtx_z",
     ]
@@ -252,7 +264,7 @@ def load_tracks_root(
 
     # Pre-build covariance index pairs
     _cov_ij = [(i, j) for i in range(5) for j in range(i + 1)]
-    _int_mc = {"MC_truth", "MC_pid", "MC_key"}
+    _int_mc = {"MC_truth", "MC_pid", "MC_key", "MC_pv_key", "MC_fromSignal"}
 
     for entry_idx in _progress(range(n_entries), desc="Loading tracks", total=n_entries):
         evt_num = int(py["EventNumber"][entry_idx])
@@ -416,7 +428,8 @@ def iter_events_root(
     ]
     hit_branches = ["TVHits_z", "TVHits_t"]
     mc_branches = [
-        "MC_truth", "MC_pid", "MC_key",
+        "MC_truth", "MC_pid",
+        "MC_key", "MC_pv_key", "MC_fromSignal",
         "MC_px", "MC_py", "MC_pz", "MC_pe", "MC_charge",
         "MC_ovtx_x", "MC_ovtx_y", "MC_ovtx_z",
     ]
@@ -426,6 +439,7 @@ def iter_events_root(
         "PV_cov_0_0", "PV_cov_1_0", "PV_cov_1_1",
         "PV_cov_2_0", "PV_cov_2_1", "PV_cov_2_2",
         "PV_cov_3_3",
+        "PV_mc_key",
     ]
     event_branches = ["EventNumber", "RunNumber"]
     all_branches = (
@@ -435,7 +449,7 @@ def iter_events_root(
     )
 
     _cov_ij = [(i, j) for i in range(5) for j in range(i + 1)]
-    _int_mc = {"MC_truth", "MC_pid", "MC_key"}
+    _int_mc = {"MC_truth", "MC_pid", "MC_key", "MC_pv_key", "MC_fromSignal"}
 
     import numpy as np
 

@@ -5,7 +5,7 @@ __author__ = "Renato Quagliani <rquaglia@cern.ch>"
 from .combiner import ParticleCombiner, TrackCombiner
 from .composite import combination_to_track_state
 from .decay import Decay, combine, make_decay
-from .io import iter_events_root, load_events_root, load_pvs_root, load_tracks_root
+from .io import candidates_to_dataframe, iter_events_root, load_events_root, load_pvs_root, load_tracks_root
 from .models import (
     CombinationCuts,
     CombinationResult,
@@ -60,6 +60,7 @@ __all__ = [
     "make_electron",
     "particle_hypothesis_from_name",
     # I/O
+    "candidates_to_dataframe",
     "load_tracks_root",
     "load_pvs_root",
     "iter_events_root",

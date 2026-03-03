@@ -178,9 +178,12 @@ def _combine_pools(combiner, decay, raw_pools, primary_vertices, event_id,
     if not pvs:
         raise ValueError("At least one primary vertex is required.")
 
+    cuts = decay.cuts or CombinationCuts()
+
     # Preselect each pool
     if decay.preselection is not None:
-        pools = [combiner.preselect_tracks(p, pvs, decay.preselection) for p in pools]
+        pools = [combiner.preselect_tracks(p, pvs, decay.preselection,
+                                           use_timing=cuts.use_timing) for p in pools]
 
     if any(not p for p in pools):
         return []
@@ -188,7 +191,6 @@ def _combine_pools(combiner, decay, raw_pools, primary_vertices, event_id,
     valid_hypotheses = combiner._validate_hypotheses(
         list(decay.mass_hypotheses), decay.n_body,
     )
-    cuts = decay.cuts or CombinationCuts()
     combiner._validate_charge_patterns(cuts.allowed_charge_patterns, decay.n_body)
 
     candidate_iter = _enumerate_pool_candidates(pools)

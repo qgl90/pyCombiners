@@ -100,8 +100,11 @@ def plot_distributions(
                     linewidth=2, color="red", label="Sig", density=True)
         ax.set_xlabel(xlabel, fontsize=11)
         ax.set_ylabel("Norm.", fontsize=11)
+        ax.set_xlim(xrange)
         ax.legend(fontsize=9)
         ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=10))
+        if name == "dira":
+            ax.tick_params(axis="x", rotation=30)
         ax.grid(True, alpha=0.3)
 
     for j in range(n_obs, len(axes)):
