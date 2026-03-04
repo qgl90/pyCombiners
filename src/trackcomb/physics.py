@@ -366,14 +366,39 @@ def impact_parameter_to_pv(track: TrackState, pv: PrimaryVertex) -> tuple[float,
     return ip, chi2
 
 
-def min_impact_parameter_to_pvs(track: TrackState, pvs: list[PrimaryVertex]) -> tuple[float, float, str | None]:
-    """Find minimum-IP PV association for one track over a PV list."""
+def _flight_corrected_dt(track: TrackState, pv: PrimaryVertex) -> float:
+    """Compute flight-corrected time residual: t_track - t_flight - t_PV [ns]."""
+    dz = track.z - pv.z
+    speed_factor = math.sqrt(1.0 + track.tx * track.tx + track.ty * track.ty)
+    flight_time = (dz * speed_factor) / C_LIGHT_MM_PER_NS
+    return track.time - flight_time - pv.time
+
+
+def min_impact_parameter_to_pvs(
+    track: TrackState,
+    pvs: list[PrimaryVertex],
+    max_dt_corrected: float | None = 0.05,
+) -> tuple[float, float, str | None]:
+    """Find minimum-IP PV association for one track over a PV list.
+
+    If *max_dt_corrected* is set (default 0.05 ns), PVs are first filtered
+    by the flight-corrected time residual |dt_corrected| < threshold before
+    the min-IP search.  Falls back to all PVs if none pass the time cut.
+    """
     if not pvs:
         return 0.0, 0.0, None
+    candidates = pvs
+    if max_dt_corrected is not None:
+        time_filtered = [
+            pv for pv in pvs
+            if abs(_flight_corrected_dt(track, pv)) < max_dt_corrected
+        ]
+        if time_filtered:
+            candidates = time_filtered
     best_ip = float("inf")
     best_chi2 = float("inf")
     best_id: str | None = None
-    for pv in pvs:
+    for pv in candidates:
         ip, chi2 = impact_parameter_to_pv(track, pv)
         if ip < best_ip:
             best_ip = ip
@@ -523,6 +548,25 @@ def composite_time_agreement_to_pv(
     if sigma2 <= 0.0:
         return residual, residual * residual, flight_time
     return residual, (residual * residual) / sigma2, flight_time
+
+
+def compute_dira(
+    vertex_xyz: tuple[float, float, float],
+    candidate_p4: LorentzVector,
+    pv: PrimaryVertex,
+) -> float:
+    """Compute DIRA: cos(angle) between candidate momentum and flight direction.
+
+    Flight direction is the vector from PV to composite decay vertex.
+    Returns cos(theta) in [-1, 1]; signal peaks near +1.
+    """
+    flight = (vertex_xyz[0] - pv.x, vertex_xyz[1] - pv.y, vertex_xyz[2] - pv.z)
+    mom = (candidate_p4.px, candidate_p4.py, candidate_p4.pz)
+    mag_flight = norm3(flight)
+    mag_mom = norm3(mom)
+    if mag_flight * mag_mom < 1e-16:
+        return 0.0
+    return dot3(flight, mom) / (mag_flight * mag_mom)
 
 
 def pair_kinematics(p4: LorentzVector) -> tuple[float, float]:

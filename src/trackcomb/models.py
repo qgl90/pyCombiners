@@ -196,6 +196,7 @@ class CombinationResult:
     composite_pv_time_chi2: float | None = None
     composite_pv_time_residual: float | None = None
     composite_pv_flight_time: float | None = None
+    dira: float | None = None
     composite_track: "TrackState | None" = None
 
 
@@ -224,7 +225,9 @@ class CombinationCuts:
     min_pair_eta: float | None = None
     max_pair_eta: float | None = None
     max_composite_pv_time_chi2: float | None = None
+    max_composite_pv_time_residual: float | None = 0.05
     allowed_charge_patterns: tuple[str, ...] | None = None
+    use_timing: bool = True
 
 
 def iter_n_body_combinations(
