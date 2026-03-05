@@ -1,354 +1,654 @@
-"""High-level combination engine for event tracks and PV hypotheses."""
+"""N-body track combination pipeline."""
 
 from __future__ import annotations
+
 __author__ = "Renato Quagliani <rquaglia@cern.ch>"
 
 
-from dataclasses import dataclass
-from typing import Iterable, Sequence
-
-from .models import (
-    CombinationCuts,
-    CombinationResult,
-    EventInput,
-    ParticleHypothesis,
-    PrimaryVertex,
-    TrackPreselection,
-    TrackState,
-    iter_n_body_combinations,
-)
-from .composite import combination_to_track_state
-from .physics import (
-    C_LIGHT_MM_PER_NS,
-    VertexTimeFitResult,
-    associate_composite_to_pvs,
-    compute_dira,
-    fit_vertex_time,
-    fit_vertex_xyz_t,
-    min_impact_parameter_to_pvs,
-    pair_kinematics,
-    pairwise_doca,
-    pairwise_time_chi2,
-    sum_lorentz,
-    track_to_lorentz,
-)
+# ---------------------------------------------------------------------------
+# SoA vectorized combination pipeline
+# ---------------------------------------------------------------------------
 
 
-@dataclass
-class ParticleCombiner:
-    """Build and filter n-body particle candidates from track inputs."""
+def combine(
+    track_pools,
+    pvs,
+    track_cuts=None,
+    combination_cuts=None,
+    vertex_cuts=None,
+    use_timing=True,
+    max_composite_pv_time_residual=0.05,
+    max_composite_pv_time_chi2=None,
+):
+    """Run the n-body combination pipeline.
 
-    speed_of_light: float = C_LIGHT_MM_PER_NS
+    track_pools determines the combinatorics: same object twice gives
+    C(n,2) pairs, distinct objects give the cartesian product with
+    shared-track removal. Each pool must have a "mass" field from
+    set_tracks_pid(). Returns a jagged Container (events, var_candidates).
+    """
+    import awkward as ak
+    import numpy as np
 
-    def preselect_tracks(
-        self,
-        tracks: Sequence[TrackState],
-        primary_vertices: Sequence[PrimaryVertex],
-        preselection: TrackPreselection | None = None,
-        use_timing: bool = True,
-    ) -> list[TrackState]:
-        """Apply track-level preselection before combinatorics."""
-        if preselection is None:
-            return list(tracks)
-        _dt_cut = 0.05 if use_timing else None
-        out: list[TrackState] = []
-        for t in tracks:
-            if preselection.min_pt is not None and t.pt < preselection.min_pt:
-                continue
-            if preselection.min_eta is not None and t.eta < preselection.min_eta:
-                continue
-            if preselection.max_eta is not None and t.eta > preselection.max_eta:
-                continue
-            if preselection.min_ip_to_any_pv is not None:
-                min_ip, _, _ = min_impact_parameter_to_pvs(t, list(primary_vertices), max_dt_corrected=_dt_cut)
-                if min_ip < preselection.min_ip_to_any_pv:
-                    continue
-            out.append(t)
-        return out
+    from .models import apply_cuts
+    from .physics import (
+        composite_pv_association,
+        doca_2body,
+        doca_nbody,
+        invariant_mass,
+        lorentz_sum,
+        pairwise_time_chi2 as _pair_tchi2,
+        pt_eta,
+        vertex_fit_xyz,
+        vertex_time_fit,
+        flatten_daughters,
+        make_combinations,
+        unflatten_array,
+    )
 
-    def combine(
-        self,
-        tracks: Sequence[TrackState],
-        primary_vertices: Sequence[PrimaryVertex],
-        n_body: int,
-        mass_hypotheses: Sequence[Sequence[float | ParticleHypothesis]],
-        preselection: TrackPreselection | None = None,
-        cuts: CombinationCuts | None = None,
-        event_id: str | None = None,
-    ) -> list[CombinationResult]:
-        """Build n-body candidates and apply candidate-level cuts.
+    n_body = len(track_pools)
+    n_events = len(pvs["x"])
 
-        Workflow:
-        1. Preselect tracks.
-        2. Enumerate n-body combinations.
-        3. Fit spatial vertex `(x,y,z)` from track geometry.
-        4. For each mass assignment, propagate track times with beta correction.
-        5. Apply cuts (doca, chi2, mass, pt, eta, charge pattern).
-        6. Return accepted `CombinationResult` objects.
-        """
-        cuts = cuts or CombinationCuts()
-        selected_tracks = self.preselect_tracks(
-            tracks, primary_vertices, preselection, use_timing=cuts.use_timing,
-        )
-        if not selected_tracks:
-            return []
-        pvs = list(primary_vertices)
-        if not pvs:
-            raise ValueError("At least one primary vertex is required.")
-        valid_hypotheses = self._validate_hypotheses(mass_hypotheses, n_body)
-        self._validate_charge_patterns(cuts.allowed_charge_patterns, n_body)
-
-        return self._combine_tuples(
-            iter_n_body_combinations(selected_tracks, n_body),
-            pvs, valid_hypotheses, cuts, event_id,
-        )
-
-    def _combine_tuples(
-        self,
-        candidate_iter: Iterable[tuple[TrackState, ...]],
-        pvs: list[PrimaryVertex],
-        valid_hypotheses: list[tuple[ParticleHypothesis, ...]],
-        cuts: CombinationCuts,
-        event_id: str | None,
-    ) -> list[CombinationResult]:
-        """Process pre-enumerated candidate tuples through vertex-fit and cut pipeline."""
-        pv_by_id = {pv.pv_id: pv for pv in pvs}
-        results: list[CombinationResult] = []
-        for combo in candidate_iter:
-            combo_tracks = list(combo)
-            # Geometry-only fit: the vertex position is solved once per track tuple.
-            fit = fit_vertex_xyz_t(
-                combo_tracks,
-                masses=None,
-                speed_of_light=self.speed_of_light,
+    # 0. Validate: every pool must carry a "mass" field
+    for i, pool in enumerate(track_pools):
+        if "mass" not in pool:
+            raise ValueError(
+                f"track_pools[{i}] is missing a 'mass' field.  "
+                "Use set_tracks_pid(tracks, particle_id) to assign mass hypotheses."
             )
-            if cuts.max_vertex_chi2 is not None and fit.spatial_chi2 > cuts.max_vertex_chi2:
-                continue
 
-            doca_pairs = pairwise_doca(combo_tracks)
-            if cuts.max_doca is not None and any(v > cuts.max_doca for v in doca_pairs.values()):
-                continue
+    # 1. Track preselection — apply to each unique pool once
+    if track_cuts:
+        seen: dict[int, dict] = {}
+        new_pools = []
+        for pool in track_pools:
+            pid = id(pool)
+            if pid not in seen:
+                seen[pid] = apply_cuts(pool, track_cuts)
+            new_pools.append(seen[pid])
+        track_pools = new_pools
 
-            vertices_xy = tuple(t.extrapolate(fit.vertex_xyz[2]) for t in combo_tracks)
-            track_min_ip: dict[str, float] = {}
-            track_min_ip_chi2: dict[str, float] = {}
-            track_charges: dict[str, int] = {}
-            track_pid_info: dict[str, dict[str, float | bool]] = {}
-            _dt_cut = 0.05 if cuts.use_timing else None
-            for track in combo_tracks:
-                ip, ip_chi2, _ = min_impact_parameter_to_pvs(track, pvs, max_dt_corrected=_dt_cut)
-                track_min_ip[track.track_id] = ip
-                track_min_ip_chi2[track.track_id] = ip_chi2
-                track_charges[track.track_id] = int(track.charge)
-                track_pid_info[track.track_id] = {
-                    "hasRICH1": track.has_rich1,
-                    "hasRICH2": track.has_rich2,
-                    "richDLL_pi": track.rich_dll_pi,
-                    "richDLL_k": track.rich_dll_k,
-                    "richDLL_p": track.rich_dll_p,
-                    "richDLL_e": track.rich_dll_e,
-                    "hasCALO": track.has_calo,
-                    "caloDLL_e": track.calo_dll_e,
-                }
-            charge_pattern = "".join("+" if t.charge > 0 else "-" if t.charge < 0 else "0" for t in combo_tracks)
-            total_charge = sum(int(t.charge) for t in combo_tracks)
-            if cuts.allowed_charge_patterns is not None and charge_pattern not in cuts.allowed_charge_patterns:
-                continue
-            source_track_ids: list[str] = []
-            for t in combo_tracks:
-                if t.source_track_ids:
-                    source_track_ids.extend(t.source_track_ids)
-                else:
-                    source_track_ids.append(t.track_id)
-            source_track_ids = list(dict.fromkeys(source_track_ids))
+    # 2. Inject _pool_index into each unique pool, then generate combinations
+    _seen_pools: set[int] = set()
+    for pool in track_pools:
+        pid = id(pool)
+        if pid not in _seen_pools:
+            pool["_pool_index"] = ak.local_index(pool["x"], axis=1)
+            _seen_pools.add(pid)
 
-            for hypotheses in valid_hypotheses:
-                # Timing compatibility is mass-dependent through beta, so this is
-                # evaluated for each hypothesis assignment separately.
-                masses = tuple(h.mass for h in hypotheses)
-                if cuts.use_timing:
-                    time_fit = fit_vertex_time(
-                        tracks=combo_tracks,
-                        masses=masses,
-                        vertex_xyz=fit.vertex_xyz,
-                        speed_of_light=self.speed_of_light,
-                    )
-                    pair_time = pairwise_time_chi2(
-                        combo_tracks,
-                        masses=masses,
-                        vertex_xyz=fit.vertex_xyz,
-                        speed_of_light=self.speed_of_light,
-                    )
-                    if cuts.max_vertex_time_chi2 is not None and time_fit.chi2 > cuts.max_vertex_time_chi2:
-                        continue
-                    if cuts.max_pair_time_chi2 is not None and pair_time > cuts.max_pair_time_chi2:
-                        continue
-                else:
-                    time_fit = VertexTimeFitResult(
-                        vertex_time=0.0, sigma_time=0.0, chi2=0.0,
-                        propagated_times=tuple(0.0 for _ in combo_tracks),
-                    )
-                    pair_time = 0.0
+    daughters = make_combinations(track_pools)
 
-                # Candidate four-momentum always follows the active hypothesis tuple.
-                p4 = sum_lorentz(
-                    track_to_lorentz(track, hypothesis.mass)
-                    for track, hypothesis in zip(combo_tracks, hypotheses, strict=True)
-                )
-                pair_pt, pair_eta = pair_kinematics(p4)
-                mass = p4.mass
-                if cuts.min_mass is not None and mass < cuts.min_mass:
-                    continue
-                if cuts.max_mass is not None and mass > cuts.max_mass:
-                    continue
-                if cuts.min_pair_pt is not None and pair_pt < cuts.min_pair_pt:
-                    continue
-                if cuts.max_pair_pt is not None and pair_pt > cuts.max_pair_pt:
-                    continue
-                if cuts.min_pair_eta is not None and pair_eta < cuts.min_pair_eta:
-                    continue
-                if cuts.max_pair_eta is not None and pair_eta > cuts.max_pair_eta:
-                    continue
+    # 3. Flatten to numpy (core physics fields, common to all daughters)
+    core_fields = [
+        "x",
+        "y",
+        "z",
+        "tx",
+        "ty",
+        "p",
+        "mass",
+        "pid",
+        "charge",
+        "time",
+        "sigma_time",
+        "track_id",
+        "_pool_index",
+        "cov_0_0",
+        "cov_1_0",
+        "cov_1_1",
+        "cov_2_0",
+        "cov_2_1",
+        "cov_2_2",
+        "cov_3_0",
+        "cov_3_1",
+        "cov_3_2",
+        "cov_3_3",
+    ]
+    for extra in ("min_ip", "min_ip_chi2", "best_pv_index"):
+        if all(extra in daughter for daughter in daughters):
+            core_fields.append(extra)
+    avail = [f for f in core_fields if all(f in daughter for daughter in daughters)]
+    flat_daughters, counts = flatten_daughters(daughters, fields=avail)
+    counts_np = np.asarray(counts)
+    N_total = int(counts_np.sum())
 
-                composite_pv_associations = associate_composite_to_pvs(
-                    vertex_xyz=fit.vertex_xyz,
-                    vertex_cov_xyz=fit.cov_xyz,
-                    vertex_time=time_fit.vertex_time,
-                    vertex_sigma_time=time_fit.sigma_time,
-                    candidate_p4=p4,
-                    pvs=pvs,
-                    speed_of_light=self.speed_of_light,
-                )
-                preselected_associations = composite_pv_associations
-                if cuts.use_timing:
-                    if cuts.max_composite_pv_time_residual is not None:
-                        filtered = [
-                            assoc for assoc in preselected_associations
-                            if abs(assoc.time_residual) <= cuts.max_composite_pv_time_residual
-                        ]
-                        if filtered:
-                            preselected_associations = filtered
-                    if cuts.max_composite_pv_time_chi2 is not None:
-                        preselected_associations = [
-                            assoc for assoc in preselected_associations
-                            if assoc.time_chi2 <= cuts.max_composite_pv_time_chi2
-                        ]
-                if not preselected_associations:
-                    continue
-                best_association = min(preselected_associations, key=lambda assoc: assoc.ip)
-                best_pv = pv_by_id[best_association.pv_id]
-                dira_val = compute_dira(fit.vertex_xyz, p4, best_pv)
+    if N_total == 0:
+        return _empty_candidates(n_body, n_events, track_pools)
 
-                src_ids = tuple(source_track_ids)
-                result = CombinationResult(
-                    track_ids=tuple(t.track_id for t in combo_tracks),
-                    masses=masses,
-                    particle_hypotheses=tuple(h.name for h in hypotheses),
-                    vertex_xyz=fit.vertex_xyz,
-                    vertex_cov_xyz=fit.cov_xyz,
-                    vertex_time=time_fit.vertex_time,
-                    vertex_sigma_time=time_fit.sigma_time,
-                    vertices_xy=vertices_xy,
-                    candidate_p4=p4,
-                    vertex_chi2=fit.spatial_chi2,
-                    vertex_time_chi2=time_fit.chi2,
-                    pair_time_chi2=pair_time,
-                    doca_pairs=doca_pairs,
-                    track_min_ip=track_min_ip,
-                    track_min_ip_chi2=track_min_ip_chi2,
-                    track_charges=track_charges,
-                    track_pid_info=track_pid_info,
-                    charge_pattern=charge_pattern,
-                    total_charge=total_charge,
-                    pair_pt=pair_pt,
-                    pair_eta=pair_eta,
-                    source_track_ids=src_ids,
-                    event_id=event_id,
-                    best_pv_id=best_association.pv_id,
-                    preselected_pv_ids=tuple(assoc.pv_id for assoc in preselected_associations),
-                    composite_min_ip=best_association.ip,
-                    composite_min_ip_chi2=best_association.ip_chi2,
-                    composite_pv_time_chi2=best_association.time_chi2,
-                    composite_pv_time_residual=best_association.time_residual,
-                    composite_pv_flight_time=best_association.flight_time,
-                    dira=dira_val,
-                )
-                # Compute composite TrackState for hierarchical combining.
-                # Use object.__setattr__ because CombinationResult is frozen.
-                ct = combination_to_track_state(
-                    result, combo_tracks,
-                    track_id=f"composite_{'_'.join(t.track_id for t in combo_tracks)}",
-                )
-                object.__setattr__(result, "composite_track", ct)
-                results.append(result)
-        return results
-
-    def combine_events(
-        self,
-        events: Sequence[EventInput],
-        n_body: int,
-        mass_hypotheses: Sequence[Sequence[float | ParticleHypothesis]],
-        preselection: TrackPreselection | None = None,
-        cuts: CombinationCuts | None = None,
-    ) -> list[CombinationResult]:
-        """Run `combine` on a list of events and aggregate tagged candidates."""
-        out: list[CombinationResult] = []
-        for event in events:
-            out.extend(
-                self.combine(
-                    tracks=event.tracks,
-                    primary_vertices=event.primary_vertices,
-                    n_body=n_body,
-                    mass_hypotheses=mass_hypotheses,
-                    preselection=preselection,
-                    cuts=cuts,
-                    event_id=event.event_id,
-                )
+    # 3b. Collect per-daughter source indices for overlap removal
+    all_same_pool = all(track_pools[i] is track_pools[0] for i in range(1, n_body))
+    source_cols = None
+    if not all_same_pool:
+        source_cols = []
+        for k, daughter in enumerate(daughters):
+            daughter_src = []
+            daughter_idx_keys = sorted(
+                key
+                for key in daughter
+                if key.startswith("daughter") and key.endswith("_track_id")
             )
-        return out
-
-    @staticmethod
-    def _validate_hypotheses(
-        mass_hypotheses: Sequence[Sequence[float | ParticleHypothesis]],
-        n_body: int,
-    ) -> list[tuple[ParticleHypothesis, ...]]:
-        """Validate hypothesis shape and coerce floats into named hypotheses."""
-        if not mass_hypotheses:
-            raise ValueError("At least one mass hypothesis set is required.")
-        parsed: list[tuple[ParticleHypothesis, ...]] = []
-        for hyp_set in mass_hypotheses:
-            if len(hyp_set) != n_body:
-                raise ValueError(
-                    f"Mass hypothesis {hyp_set!r} does not match n_body={n_body}."
+            if daughter_idx_keys:
+                for key in daughter_idx_keys:
+                    daughter_src.append(ak.to_numpy(ak.flatten(daughter[key], axis=1)))
+            elif "track_id" in daughter:
+                daughter_src.append(
+                    ak.to_numpy(ak.flatten(daughter["track_id"], axis=1))
                 )
-            parsed_set: list[ParticleHypothesis] = []
-            for item in hyp_set:
-                if isinstance(item, ParticleHypothesis):
-                    parsed_set.append(item)
-                else:
-                    mass = float(item)
-                    parsed_set.append(ParticleHypothesis(name=f"m={mass:g}", mass=mass))
-            parsed.append(tuple(parsed_set))
-        return parsed
+            source_cols.append(daughter_src)
 
-    @staticmethod
-    def _validate_charge_patterns(
-        allowed_charge_patterns: tuple[str, ...] | None,
-        n_body: int,
-    ) -> None:
-        """Validate optional charge-pattern filters against current n-body mode."""
-        if allowed_charge_patterns is None:
+    # 4. Build (N, n_body) arrays
+    def _stack(field):
+        return np.column_stack([fl[field] for fl in flat_daughters])
+
+    x = _stack("x")
+    y = _stack("y")
+    z = _stack("z")
+    tx = _stack("tx")
+    ty = _stack("ty")
+    p_arr = _stack("p")
+    mass_arr = _stack("mass")
+    charge = _stack("charge")
+    time_arr = _stack("time")
+    sigma_t = _stack("sigma_time")
+    tidx = _stack("track_id") if "track_id" in flat_daughters[0] else None
+    pidx = _stack("_pool_index") if "_pool_index" in flat_daughters[0] else None
+    pid_arr = _stack("pid") if "pid" in flat_daughters[0] else None
+
+    cov_fields = {}
+    for ck in (
+        "cov_0_0",
+        "cov_1_0",
+        "cov_1_1",
+        "cov_2_0",
+        "cov_2_1",
+        "cov_2_2",
+        "cov_3_0",
+        "cov_3_1",
+        "cov_3_2",
+        "cov_3_3",
+    ):
+        if ck in flat_daughters[0]:
+            cov_fields[ck] = _stack(ck)
+
+    event_idx = np.repeat(np.arange(n_events), counts_np)
+
+    has_min_ip = all("min_ip" in fl for fl in flat_daughters)
+    has_best_pv = all("best_pv_index" in fl for fl in flat_daughters)
+    if has_min_ip:
+        daughter_min_ip = _stack("min_ip")
+        daughter_min_ip_chi2 = _stack("min_ip_chi2")
+    if has_best_pv:
+        daughter_best_pv_index = _stack("best_pv_index")
+
+    # 5. Vertex fit
+    vertex_xyz, spatial_chi2, vertex_cov = vertex_fit_xyz(
+        x,
+        y,
+        z,
+        tx,
+        ty,
+        cov_fields,
+    )
+
+    # 6. DOCA
+    if n_body == 2:
+        doca_vals = {"doca12": doca_2body(x, y, z, tx, ty)}
+    else:
+        doca_vals = doca_nbody(x, y, z, tx, ty, n_body)
+    max_doca_arr = np.max(
+        np.column_stack(list(doca_vals.values())),
+        axis=1,
+    )
+
+    # 7. Overlap removal (structural, not a cut)
+    geo_mask = np.ones(N_total, dtype=bool)
+    if source_cols is not None:
+        overlap = np.zeros(N_total, dtype=bool)
+        for i in range(n_body):
+            for j in range(i + 1, n_body):
+                if track_pools[i] is track_pools[j]:
+                    continue  # same pool: ak.combinations already de-duped
+                for src_i in source_cols[i]:
+                    for src_j in source_cols[j]:
+                        overlap |= src_i == src_j
+        geo_mask &= ~overlap
+
+    total_charge = np.sum(charge.astype(int), axis=1)
+
+    # 8. Build combination dict and apply combination_cuts
+    comb = {}
+    comb["vertex_x"] = vertex_xyz[:, 0]
+    comb["vertex_y"] = vertex_xyz[:, 1]
+    comb["vertex_z"] = vertex_xyz[:, 2]
+    comb["spatial_chi2"] = spatial_chi2
+    comb["max_doca"] = max_doca_arr
+    comb["total_charge"] = total_charge.astype(np.float64)
+    for dk, dv in doca_vals.items():
+        comb[dk] = dv
+    for k in range(n_body):
+        comb[f"daughter{k}_charge"] = charge[:, k]
+        comb[f"daughter{k}_mass"] = mass_arr[:, k]
+        comb[f"daughter{k}_p"] = p_arr[:, k]
+        norm_k = np.sqrt(1 + tx[:, k] ** 2 + ty[:, k] ** 2)
+        comb[f"daughter{k}_pt"] = (
+            p_arr[:, k] * np.sqrt(tx[:, k] ** 2 + ty[:, k] ** 2) / norm_k
+        )
+        if tidx is not None:
+            comb[f"daughter{k}_track_id"] = tidx[:, k]
+        if pidx is not None:
+            comb[f"daughter{k}_pool_index"] = pidx[:, k]
+        if pid_arr is not None:
+            comb[f"daughter{k}_pid"] = pid_arr[:, k]
+        if has_min_ip:
+            comb[f"daughter{k}_min_ip"] = daughter_min_ip[:, k]
+            comb[f"daughter{k}_min_ip_chi2"] = daughter_min_ip_chi2[:, k]
+        if has_best_pv:
+            comb[f"daughter{k}_best_pv_index"] = daughter_best_pv_index[:, k]
+
+    if combination_cuts:
+        for cfn in combination_cuts:
+            geo_mask &= cfn(comb)
+
+    idx_geo = np.where(geo_mask)[0]
+    if len(idx_geo) == 0:
+        return _empty_candidates(n_body, n_events, track_pools)
+
+    # Apply combination filter to raw arrays
+    _g = idx_geo
+    x_g = x[_g]
+    y_g = y[_g]
+    z_g = z[_g]
+    tx_g = tx[_g]
+    ty_g = ty[_g]
+    p_g = p_arr[_g]
+    t_g = time_arr[_g]
+    st_g = sigma_t[_g]
+    mass_g = mass_arr[_g]
+    eidx_g = event_idx[_g]
+    vxyz_g = vertex_xyz[_g]
+    vcov_g = vertex_cov[_g]
+
+    # Filter the combination dict
+    out = {k: v[_g] for k, v in comb.items()}
+    out["vertex_chi2"] = out.pop("spatial_chi2")  # rename for output
+
+    vcov_sel = vcov_g
+    for i in range(3):
+        for j in range(i + 1):
+            out[f"vertex_cov_{i}_{j}"] = vcov_sel[:, i, j]
+
+    N_geo = len(idx_geo)
+
+    # 9. Timing + kinematics
+    if use_timing:
+        vt, stt, tchi2 = vertex_time_fit(
+            t_g,
+            st_g,
+            z_g,
+            tx_g,
+            ty_g,
+            p_g,
+            mass_g,
+            vxyz_g[:, 2],
+        )
+        ptchi2 = _pair_tchi2(
+            t_g,
+            st_g,
+            z_g,
+            tx_g,
+            ty_g,
+            p_g,
+            mass_g,
+            vxyz_g[:, 2],
+        )
+    else:
+        vt = np.zeros(N_geo)
+        stt = np.zeros(N_geo)
+        tchi2 = np.zeros(N_geo)
+        ptchi2 = np.zeros(N_geo)
+
+    spx, spy, spz, se = lorentz_sum(p_g, tx_g, ty_g, mass_g)
+    mass_v = invariant_mass(spx, spy, spz, se)
+    pt_v, eta_v = pt_eta(spx, spy, spz)
+
+    out["vertex_time"] = vt
+    out["sigma_time"] = stt
+    out["vertex_time_chi2"] = tchi2
+    out["pair_time_chi2"] = ptchi2
+    out["px"] = spx
+    out["py"] = spy
+    out["pz"] = spz
+    out["energy"] = se
+    out["mass"] = mass_v
+    out["pt"] = pt_v
+    out["eta"] = eta_v
+
+    # 10. Apply vertex_cuts
+    if vertex_cuts:
+        vmask = np.ones(N_geo, dtype=bool)
+        for cfn in vertex_cuts:
+            vmask &= cfn(out)
+        if not np.all(vmask):
+            keep = np.where(vmask)[0]
+            out = {k: v[keep] for k, v in out.items()}
+            eidx_g = eidx_g[keep]
+            vcov_sel = vcov_sel[keep]
+
+    # 11. PV association
+    pv_out_counts = np.bincount(eidx_g, minlength=n_events)
+    pv_assoc = composite_pv_association(
+        vertex_xyz=np.column_stack([out["vertex_x"], out["vertex_y"], out["vertex_z"]]),
+        vertex_cov=vcov_sel,
+        vertex_time=out["vertex_time"],
+        sigma_time=out["sigma_time"],
+        px=out["px"],
+        py=out["py"],
+        pz=out["pz"],
+        energy=out["energy"],
+        pvs=pvs,
+        counts=pv_out_counts,
+        max_time_residual=max_composite_pv_time_residual if use_timing else None,
+        max_time_chi2=max_composite_pv_time_chi2 if use_timing else None,
+    )
+    out.update(pv_assoc)
+
+    # 12. Unflatten to jagged
+    final_counts = np.bincount(eidx_g, minlength=n_events)
+    result = {k: unflatten_array(v, final_counts) for k, v in out.items()}
+
+    # 13. Attach pool references (non-array metadata)
+    result["_daughter_pools"] = track_pools
+
+    # 14. Track-compatible fields for staged decays
+    _add_track_fields(result)
+
+    # 15. MC truth propagation for hierarchical decays
+    _propagate_mc_truth(result)
+
+    return result
+
+
+def _propagate_mc_truth(result):
+    """Propagate MC truth from daughter pools to combined candidates.
+
+    Finds the common MC ancestor across all daughters; sets mc_truth=1
+    for signal, 0 otherwise. The remaining ancestor chain (above the
+    common mother) is stored in mc_ancestor_pids/keys.
+    """
+    import awkward as ak
+    import numpy as np
+
+    from .models import infer_n_body
+
+    pools = result["_daughter_pools"]
+    n_body = infer_n_body(result)
+    n_events = len(result["vertex_x"])
+
+    # Guard: skip if any pool lacks MC ancestry fields
+    mc_required = {
+        "mc_truth",
+        "mc_pid",
+        "mc_key",
+        "mc_pv_key",
+        "mc_fromsignal",
+        "mc_ancestor_pids",
+        "mc_ancestor_keys",
+    }
+    for pool in pools:
+        if not mc_required.issubset(pool.keys()):
             return
-        for pat in allowed_charge_patterns:
-            if len(pat) != n_body:
-                raise ValueError(
-                    f"Charge pattern '{pat}' length does not match n_body={n_body}."
-                )
-            if any(ch not in "+-0" for ch in pat):
-                raise ValueError(
-                    f"Charge pattern '{pat}' contains invalid symbol. Use +, -, or 0."
-                )
+
+    cand_counts = ak.to_numpy(ak.num(result["vertex_x"]))
+    N_total = int(cand_counts.sum())
+    evt_per_cand = np.repeat(np.arange(n_events), cand_counts)
+
+    # --- Step 1: Gather per-daughter MC fields using offset indexing ---
+    d_mc_truth = []
+    d_mc_pid = []
+    d_mc_key = []
+    d_mc_pv_key = []
+    d_mc_fromsignal = []
+    d_anc_pids = []  # singly-jagged (N_total, var_ancestors)
+    d_anc_keys = []
+
+    for k in range(n_body):
+        pool = pools[k]
+        pool_idx = result[f"daughter{k}_pool_index"]
+        idx_flat = ak.to_numpy(ak.flatten(pool_idx))
+
+        pool_counts = ak.to_numpy(ak.num(pool["x"]))
+        pool_offsets = np.zeros(len(pool_counts) + 1, dtype=np.int64)
+        np.cumsum(pool_counts, out=pool_offsets[1:])
+
+        global_idx = pool_offsets[evt_per_cand] + idx_flat
+
+        # Scalar MC fields
+        d_mc_truth.append(np.asarray(ak.flatten(pool["mc_truth"]))[global_idx])
+        d_mc_pid.append(np.asarray(ak.flatten(pool["mc_pid"]))[global_idx])
+        d_mc_key.append(np.asarray(ak.flatten(pool["mc_key"]))[global_idx])
+        d_mc_pv_key.append(np.asarray(ak.flatten(pool["mc_pv_key"]))[global_idx])
+        d_mc_fromsignal.append(
+            np.asarray(ak.flatten(pool["mc_fromsignal"]))[global_idx]
+        )
+
+        # Jagged ancestor fields: (events, tracks, ancestors) → (total_tracks, ancestors)
+        flat_anc_pids = ak.flatten(pool["mc_ancestor_pids"], axis=1)
+        flat_anc_keys = ak.flatten(pool["mc_ancestor_keys"], axis=1)
+        d_anc_pids.append(flat_anc_pids[global_idx])
+        d_anc_keys.append(flat_anc_keys[global_idx])
+
+    # --- Step 2: Find common ancestors via awkward broadcasting ---
+    # Use daughter0's ancestor chain as reference; ancestors are ordered
+    # most-immediate-first, so argmax finds the direct common mother.
+    d0_keys = d_anc_keys[0]  # (N_total, var_ancestors)
+    d0_pids = d_anc_pids[0]
+
+    # Mask: which of daughter0's ancestors are shared by ALL other daughters
+    in_common = ak.ones_like(d0_keys, dtype=bool)
+    for k in range(1, n_body):
+        # (N, var_d0, 1) == (N, 1, var_dk) → (N, var_d0, var_dk)
+        match_k = d0_keys[:, :, np.newaxis] == d_anc_keys[k][:, np.newaxis, :]
+        in_common = in_common & ak.any(match_k, axis=-1)
+
+    has_common = ak.to_numpy(ak.any(in_common, axis=-1))  # (N_total,)
+    first_idx = ak.to_numpy(ak.fill_none(ak.argmax(in_common, axis=-1), 0))
+
+    # --- Step 3: Extract common ancestor PID/key via flat offset indexing ---
+    d0_counts = ak.to_numpy(ak.num(d0_keys))
+    d0_offsets = np.zeros(N_total + 1, dtype=np.int64)
+    np.cumsum(d0_counts, out=d0_offsets[1:])
+
+    flat_d0_pids = np.asarray(ak.flatten(d0_pids))
+    flat_d0_keys = np.asarray(ak.flatten(d0_keys))
+
+    if len(flat_d0_pids) > 0:
+        safe_idx = np.where(has_common, d0_offsets[:-1] + first_idx, 0)
+        common_pid = np.where(has_common, flat_d0_pids[safe_idx], 0)
+        common_key = np.where(has_common, flat_d0_keys[safe_idx], -1)
+    else:
+        common_pid = np.zeros(N_total, dtype=np.int64)
+        common_key = np.full(N_total, -1, dtype=np.int64)
+
+    # --- Step 4: Build remaining ancestor chain (beyond common mother) ---
+    remaining_count = np.where(has_common, d0_counts - first_idx - 1, 0).astype(
+        np.int64
+    )
+    remaining_count = np.maximum(remaining_count, 0)
+    total_remaining = int(remaining_count.sum())
+
+    if total_remaining > 0 and len(flat_d0_pids) > 0:
+        remaining_start = d0_offsets[:-1] + first_idx + 1
+        rem_offsets = np.zeros(N_total + 1, dtype=np.int64)
+        np.cumsum(remaining_count, out=rem_offsets[1:])
+
+        cand_per_rem = np.repeat(np.arange(N_total), remaining_count)
+        local_within = (
+            np.arange(total_remaining, dtype=np.int64) - rem_offsets[cand_per_rem]
+        )
+        flat_rem_idx = remaining_start[cand_per_rem] + local_within
+
+        new_anc_pids = ak.unflatten(flat_d0_pids[flat_rem_idx], remaining_count)
+        new_anc_keys = ak.unflatten(flat_d0_keys[flat_rem_idx], remaining_count)
+    else:
+        dtype = flat_d0_pids.dtype if len(flat_d0_pids) > 0 else np.int64
+        new_anc_pids = ak.unflatten(np.array([], dtype=dtype), remaining_count)
+        new_anc_keys = ak.unflatten(np.array([], dtype=dtype), remaining_count)
+
+    # --- Step 5: Assemble scalar MC fields ---
+    mc_truth = np.where(has_common, 1, 0)
+    mc_pid = common_pid
+    mc_key = np.where(has_common, common_key, -1)
+    mc_pv_key = np.where(has_common, d_mc_pv_key[0], -1)
+
+    all_fromsignal = np.ones(N_total, dtype=bool)
+    for k in range(n_body):
+        all_fromsignal &= d_mc_fromsignal[k] == 1
+    mc_fromsignal = np.where(has_common & all_fromsignal, 1, 0)
+
+    # --- Step 6: Unflatten to (events, candidates) and assign ---
+    result["mc_truth"] = ak.unflatten(mc_truth, cand_counts)
+    result["mc_pid"] = ak.unflatten(mc_pid, cand_counts)
+    result["mc_key"] = ak.unflatten(mc_key, cand_counts)
+    result["mc_pv_key"] = ak.unflatten(mc_pv_key, cand_counts)
+    result["mc_fromsignal"] = ak.unflatten(mc_fromsignal, cand_counts)
+    # Jagged: (N_total, var_ancestors) → (events, candidates, var_ancestors)
+    result["mc_ancestor_pids"] = ak.unflatten(new_anc_pids, cand_counts)
+    result["mc_ancestor_keys"] = ak.unflatten(new_anc_keys, cand_counts)
 
 
-# Backward-compatible alias.
-TrackCombiner = ParticleCombiner
+def _add_track_fields(result):
+    """Add track-compatible fields for staged (hierarchical) decays."""
+    import awkward as ak
+    import numpy as np
+
+    # Position: vertex → track reference point
+    result["x"] = result["vertex_x"]
+    result["y"] = result["vertex_y"]
+    result["z"] = result["vertex_z"]
+
+    # Slopes and momentum magnitude from 4-momentum
+    safe_pz = ak.where(np.abs(result["pz"]) > 1e-12, result["pz"], 1e-12)
+    result["tx"] = result["px"] / safe_pz
+    result["ty"] = result["py"] / safe_pz
+    result["p"] = (result["px"] ** 2 + result["py"] ** 2 + result["pz"] ** 2) ** 0.5
+
+    # Charge and timing
+    result["charge"] = result["total_charge"]
+    result["time"] = result["vertex_time"]
+    # sigma_time already exists from vertex time fit
+
+    # Track identity for overlap removal in next-level combine
+    result["track_id"] = ak.local_index(result["vertex_x"], axis=1)
+
+    # Covariance: spatial block from vertex fit, slope block ≈ 0
+    result["cov_0_0"] = result["vertex_cov_0_0"]
+    result["cov_1_0"] = result["vertex_cov_1_0"]
+    result["cov_1_1"] = result["vertex_cov_1_1"]
+    zero = result["vertex_x"] * 0
+    eps = zero + 1e-6
+    result["cov_2_0"] = zero
+    result["cov_2_1"] = zero
+    result["cov_2_2"] = eps
+    result["cov_3_0"] = zero
+    result["cov_3_1"] = zero
+    result["cov_3_2"] = zero
+    result["cov_3_3"] = eps
+
+
+def _empty_candidates(n_body, n_events, track_pools=None):
+    """Return an empty candidate container."""
+    import awkward as ak
+    import numpy as np
+
+    empty = ak.Array([[] for _ in range(n_events)])
+    fields = [
+        "vertex_x",
+        "vertex_y",
+        "vertex_z",
+        "vertex_chi2",
+        "max_doca",
+        "total_charge",
+        "vertex_time",
+        "sigma_time",
+        "vertex_time_chi2",
+        "pair_time_chi2",
+        "px",
+        "py",
+        "pz",
+        "energy",
+        "mass",
+        "pt",
+        "eta",
+        "composite_ip",
+        "composite_ip_chi2",
+        "time_residual",
+        "time_chi2",
+        "flight_time",
+        "dira",
+        "best_pv_x",
+        "best_pv_y",
+        "best_pv_z",
+        # Track-compatible fields
+        "x",
+        "y",
+        "z",
+        "tx",
+        "ty",
+        "p",
+        "charge",
+        "time",
+        "track_id",
+        "cov_0_0",
+        "cov_1_0",
+        "cov_1_1",
+        "cov_2_0",
+        "cov_2_1",
+        "cov_2_2",
+        "cov_3_0",
+        "cov_3_1",
+        "cov_3_2",
+        "cov_3_3",
+    ]
+    for i in range(3):
+        for j in range(i + 1):
+            fields.append(f"vertex_cov_{i}_{j}")
+    for k in range(n_body):
+        fields.extend(
+            [
+                f"daughter{k}_track_id",
+                f"daughter{k}_pool_index",
+                f"daughter{k}_pid",
+                f"daughter{k}_charge",
+                f"daughter{k}_mass",
+            ]
+        )
+    if n_body == 2:
+        fields.append("doca12")
+
+    # MC truth fields (if pools have them)
+    has_mc = track_pools is not None and all(
+        "mc_ancestor_keys" in p for p in track_pools
+    )
+    if has_mc:
+        fields.extend(
+            [
+                "mc_truth",
+                "mc_pid",
+                "mc_key",
+                "mc_pv_key",
+                "mc_fromsignal",
+            ]
+        )
+
+    out = {f: empty for f in fields}
+
+    # Doubly-jagged MC ancestor fields: (events, 0_candidates, var_ancestors)
+    if has_mc:
+        inner = ak.unflatten(np.array([], dtype=np.int64), np.array([], dtype=np.int64))
+        empty_nested = ak.unflatten(inner, np.zeros(n_events, dtype=np.int64))
+        out["mc_ancestor_pids"] = empty_nested
+        out["mc_ancestor_keys"] = empty_nested
+
+    if track_pools is not None:
+        out["_daughter_pools"] = track_pools
+    return out

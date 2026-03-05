@@ -1,35 +1,44 @@
 stages:
-  - welcome
+  - check
   - test
 
-default:
-  image: python:3.11
-  cache:
-    key: "$CI_COMMIT_REF_SLUG"
-    paths:
-      - .cache/pip
+check-formatting:
+  stage: check
+  image: python:3.12
   before_script:
-    - python --version
-    - pip install --upgrade pip
-    - pip install -e .
-
-hello_world: 
-  stage : welcome
-  script : 
-    - echo "Welcome to pyCombiners"
-unit_tests:
-  stage: test
+    - pip install ruff
   script:
-    - PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py" -v
+    - ruff format .
+    - |
+      if ! git diff --quiet; then
+        git config user.name "GitLab CI"
+        git config user.email "noreply@gitlab.com"
+        git add -A
+        git commit -m "Format Python code"
+        git format-patch -1 --stdout > format.patch
+        echo -e "\nTo fix, run:"
+        echo "  pip install ruff && ruff format ."
+        echo "or:"
+        echo "  curl -L \"${CI_JOB_URL}/artifacts/raw/format.patch\" | git am"
+        exit 1
+      fi
+  artifacts:
+    paths:
+      - format.patch
+    when: on_failure
+    expire_in: 1 week
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
 
-cli_smoke_test:
+unit-tests:
   stage: test
+  image: condaforge/mambaforge:latest
+  before_script:
+    - mamba env update -n base -f tests/environment.yaml
+    - pip install -e . --no-deps
   script:
-    - track-combiner --tracks examples/tracks.json --primary-vertices examples/primary_vertex.json --masses examples/masses_2body.json --n-body 2 --out output_ci_smoke.parquet
-    - test -s output_ci_smoke.parquet
+    - python -m pytest tests/ -v
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
