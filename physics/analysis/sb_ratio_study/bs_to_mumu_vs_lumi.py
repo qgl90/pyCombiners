@@ -131,6 +131,58 @@ def main():
     fig2.savefig(out_dir / "bs_sb_vs_eta_by_lumi.png", dpi=150)
     print(f"Saved {out_dir / 'bs_sb_vs_eta_by_lumi.png'}")
 
+    # ---- Plot 3: mass distribution per lumi (signal vs background) ----
+    n_lumis = len(lumis)
+    ncols = min(n_lumis, 2)
+    nrows = (n_lumis + ncols - 1) // ncols
+    fig3, axes3 = make_figure(nrows, ncols, figsize=(8 * ncols, 6 * nrows))
+    axes3 = np.atleast_1d(axes3).flatten()
+
+    # Consistent mass range across all lumis
+    all_mass = pd.concat([df["mass"] for df in frames])
+    mass_range = (all_mass.min(), all_mass.max())
+    mass_bins = 40
+
+    for i in order:
+        ax = axes3[list(order).index(i)]
+        df = frames[i]
+        lumi = lumis[i]
+        sig = df[df["is_signal"]]
+        bkg = df[~df["is_signal"]]
+        ns, nb = len(sig), len(bkg)
+        sb = ns / max(nb, 1)
+
+        ax.hist(
+            bkg["mass"].values,
+            bins=mass_bins,
+            range=mass_range,
+            histtype="stepfilled",
+            alpha=0.5,
+            color="salmon",
+            label=f"Bkg ({nb})",
+        )
+        ax.hist(
+            sig["mass"].values,
+            bins=mass_bins,
+            range=mass_range,
+            histtype="stepfilled",
+            alpha=0.7,
+            color="steelblue",
+            label=f"Sig ({ns})",
+        )
+        ax.set_title(f"{lumi}  (S/B={sb:.4f})")
+        ax.set_xlabel(r"$m(\mu^+\mu^-)$ [MeV]")
+        ax.set_ylabel("Candidates")
+        ax.legend()
+
+    for i in range(n_lumis, len(axes3)):
+        axes3[i].set_visible(False)
+
+    fig3.suptitle(r"$B_s^0 \to \mu^+\mu^-$ mass distribution by luminosity")
+    fig3.tight_layout()
+    fig3.savefig(out_dir / "bs_mass_by_lumi.png", dpi=150)
+    print(f"Saved {out_dir / 'bs_mass_by_lumi.png'}")
+
 
 if __name__ == "__main__":
     main()

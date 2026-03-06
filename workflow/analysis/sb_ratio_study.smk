@@ -10,6 +10,7 @@ rule all_sb_ratio_study:
                lumi=["1p5e34"]),
         f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_lumi.png",
         f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_eta_by_lumi.png",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_mass_by_lumi.png",
 
 
 rule sb_ratio_bs_to_mumu:
@@ -39,6 +40,7 @@ rule sb_ratio_bs_to_mumu_vs_lumi:
     output:
         f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_lumi.png",
         f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_eta_by_lumi.png",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_mass_by_lumi.png",
     log:
         f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/run.log",
     params:
