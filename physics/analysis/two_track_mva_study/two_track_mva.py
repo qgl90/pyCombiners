@@ -122,7 +122,7 @@ def main():
             label=f"Background ({n_bkg})",
             color="C1",
         )
-    ax.set_xlabel("Mass [GeV]")
+    ax.set_xlabel("Mass [MeV]")
     ax.set_ylabel("Candidates")
     ax.set_title(f"Invariant mass{lumi_label}")
     ax.legend()
@@ -135,9 +135,9 @@ def main():
         ("fdchi2", "log(fdchi2)", lambda x: np.log(np.maximum(x, 1e-10))),
         ("vertex_chi2", "Vertex chi2", None),
         ("composite_ip_chi2", "Composite IP chi2", None),
-        ("mcor", "Corrected mass [GeV]", None),
+        ("mcor", "Corrected mass [MeV]", None),
         ("flight_eta", "Flight eta", None),
-        ("pt", "SV pT [GeV]", None),
+        ("pt", "SV pT [MeV]", None),
     ]
 
     fig, axes = make_figure(2, 3, figsize=(24, 14))

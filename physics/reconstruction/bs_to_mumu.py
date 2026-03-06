@@ -34,39 +34,39 @@ def _build_mode(mode: str) -> dict[str, Any]:
 
     if mode == "full":
         return {
-            "track_cuts": [cut_min("pt", 1.0)],
+            "track_cuts": [cut_min("pt", 1000)],
             "combination_cuts": [
                 cut_max("max_doca", 0.05),
                 cut_max("spatial_chi2", 4.0),
             ],
             "vertex_cuts": [
-                cut_range("mass", 4.7, 6.0),
+                cut_range("mass", 4700, 6000),
                 cut_max("pair_time_chi2", 4.0),
             ],
         }
 
     if mode == "full_notime":
         return {
-            "track_cuts": [cut_min("pt", 1.0)],
+            "track_cuts": [cut_min("pt", 1000)],
             "combination_cuts": [
                 cut_max("max_doca", 0.05),
                 cut_max("spatial_chi2", 4.0),
             ],
             "vertex_cuts": [
-                cut_range("mass", 4.7, 6.0),
+                cut_range("mass", 4700, 6000),
             ],
             "use_timing": False,
         }
 
     if mode == "dist":
         return {
-            "track_cuts": [cut_min("pt", 0.8)],
+            "track_cuts": [cut_min("pt", 800)],
             "combination_cuts": [
                 cut_max("max_doca", 0.2),
                 cut_max("spatial_chi2", 10.0),
             ],
             "vertex_cuts": [
-                cut_range("mass", 4.5, 6.0),
+                cut_range("mass", 4500, 6000),
                 cut_max("pair_time_chi2", 10.0),
             ],
         }
@@ -128,12 +128,12 @@ def main():
         sel &= df_all["dira"].isna() | (df_all["dira"] >= 0.9995)
         sel &= df_all["composite_ip"].isna() | (df_all["composite_ip"] < 0.1)
         sel &= df_all["composite_ip_chi2"].isna() | (df_all["composite_ip_chi2"] < 16)
-        sel &= df_all["pt"] >= 1.0
+        sel &= df_all["pt"] >= 1000
         daughter_pt_cols = sorted(
             c for c in df_all.columns if c.endswith("_pt") and c.startswith("daughter")
         )
         if daughter_pt_cols:
-            sel &= np.nanmax(df_all[daughter_pt_cols].values, axis=1) >= 2.0
+            sel &= np.nanmax(df_all[daughter_pt_cols].values, axis=1) >= 2000
 
         df = df_all[sel].copy()
     else:

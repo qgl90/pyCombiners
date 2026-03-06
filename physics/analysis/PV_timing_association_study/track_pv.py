@@ -53,7 +53,7 @@ def main():
         ("IP chi2", df["ip_chi2"].values),
         ("dt (raw) [ns]", df["dt_raw"].values),
         ("dt (flight corr) [ns]", df["dt_corrected"].values),
-        ("track pT [GeV]", df["track_pt"].values),
+        ("track pT [MeV]", df["track_pt"].values),
         ("track eta", df["track_eta"].values),
     ]
 
@@ -88,7 +88,7 @@ def main():
             (-0.5, 0.5),
             60,
         ),
-        ("track pT [GeV]", df["track_pt"].values, r"track $p_T$ [GeV]", (0, 5), 50),
+        ("track pT [MeV]", df["track_pt"].values, r"track $p_T$ [MeV]", (0, 5000), 50),
         ("track eta", df["track_eta"].values, r"track $\eta$", (2, 5.5), 50),
     ]
 
@@ -166,11 +166,10 @@ def main():
             f"{eff:>10.2f} {assoc_eff:>14.2f}"
         )
 
-    fig2, (ax1, ax2) = make_figure(1, 2, figsize=(18, 9))
+    fig2, ax1 = make_figure(1, 1, figsize=(16, 9))
 
     cuts = [r[0] for r in eff_results]
     effs = [r[3] for r in eff_results]
-    assoc_effs = [r[4] for r in eff_results]
     passed_frac = [r[1] / max(n_total, 1) * 100 for r in eff_results]
 
     ax1.plot(cuts, effs, "o-", color="steelblue", label="Correct assoc. eff.")
@@ -189,18 +188,6 @@ def main():
     ax1.set_xscale("log")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
-    ax1.set_title("Overall efficiency")
-
-    ax2.plot(cuts, assoc_effs, "o-", color="steelblue", label="Correct / associated")
-    ax2.axhline(
-        eff_ip, color="red", ls=":", lw=1.5, label=f"IP-only baseline: {eff_ip:.1f}%"
-    )
-    ax2.set_xlabel(r"|$\Delta t_{corrected}$| threshold [ns]")
-    ax2.set_ylabel("Association purity [%]")
-    ax2.set_xscale("log")
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    ax2.set_title("Among associated tracks")
 
     fig2.suptitle(
         f"PV association: min IP + time cut{lumi_tag} "

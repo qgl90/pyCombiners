@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 
-PDG_BS_MASS = 5.36688  # GeV
+PDG_BS_MASS = 5366.88  # MeV
 
 
 def main():
@@ -59,9 +59,9 @@ def main():
     from trackcomb.plot import make_figure
 
     variables = [
-        ("pt", r"$p_T(B_s^0)$ [GeV]", np.linspace(0, 15, 16)),
+        ("pt", r"$p_T(B_s^0)$ [MeV]", np.linspace(0, 15000, 16)),
         ("eta", r"$\eta(B_s^0)$", np.linspace(2, 5, 13)),
-        ("p", r"$p(B_s^0)$ [GeV]", np.linspace(0, 200, 11)),
+        ("p", r"$p(B_s^0)$ [MeV]", np.linspace(0, 200000, 11)),
         ("vertex_z", r"Vertex $z$ [mm]", np.linspace(-200, 800, 11)),
     ]
 
@@ -104,7 +104,7 @@ def main():
     ax_m.hist(
         sel["mass"].values,
         bins=50,
-        range=(4.7, 6.0),
+        range=(4700, 6000),
         histtype="stepfilled",
         alpha=0.7,
         color="steelblue",
@@ -113,7 +113,7 @@ def main():
     ax_m.axvline(
         PDG_BS_MASS, color="red", linestyle="--", linewidth=1, label=r"PDG $m(B_s^0)$"
     )
-    ax_m.set_xlabel(r"$m(\mu^+\mu^-)$ [GeV]")
+    ax_m.set_xlabel(r"$m(\mu^+\mu^-)$ [MeV]")
     ax_m.set_ylabel("Candidates")
     ax_m.set_title(
         f"$B_s^0 \\to \\mu^+\\mu^-$ mass (NO TIMING){lumi_tag}",

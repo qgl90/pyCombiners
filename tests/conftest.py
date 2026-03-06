@@ -43,7 +43,7 @@ def ks_candidates(root_tracks, root_pvs):
             lambda c: c["daughter0_charge"] * c["daughter1_charge"] < 0,
         ],
         vertex_cuts=[
-            cut_range("mass", 0.4, 0.6),
+            cut_range("mass", 400, 600),
         ],
         use_timing=False,
     )
@@ -61,7 +61,7 @@ def ks_candidates_timing(root_tracks, root_pvs):
             lambda c: c["daughter0_charge"] * c["daughter1_charge"] < 0,
         ],
         vertex_cuts=[
-            cut_range("mass", 0.4, 0.6),
+            cut_range("mass", 400, 600),
         ],
         use_timing=True,
     )

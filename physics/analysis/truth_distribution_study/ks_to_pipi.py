@@ -102,18 +102,18 @@ def main():
     from trackcomb.plot import make_figure
 
     plot_configs = [
-        ("mass", r"$m(\pi^+\pi^-)$ [GeV]", (0.47, 0.52), 60),
+        ("mass", r"$m(\pi^+\pi^-)$ [MeV]", (470, 520), 60),
         ("vertex_chi2", r"Vertex $\chi^2$", (0, 25), 50),
         ("pair_time_chi2", r"Pair time $\chi^2$", (0, 15), 50),
         ("doca", r"DOCA [mm]", (0, 1), 50),
         ("dira", r"DIRA", (0.9999, 1.0), 50),
-        ("Ks_pt", r"$p_T(K_S^0)$ [GeV]", (0, 5), 50),
+        ("Ks_pt", r"$p_T(K_S^0)$ [MeV]", (0, 5000), 50),
         ("Ks_ip", r"$K_S^0$ IP [mm]", (0, 2), 50),
         ("Ks_ip_chi2", r"$K_S^0$ IP $\chi^2$", (0, 2), 50),
         ("min_track_ip", r"min track IP [mm]", (0, 30), 50),
         ("max_track_ip", r"max track IP [mm]", (0, 50), 50),
-        ("min_track_pt", r"min track $p_T$ [GeV]", (0, 2), 50),
-        ("max_track_pt", r"max track $p_T$ [GeV]", (0, 3), 50),
+        ("min_track_pt", r"min track $p_T$ [MeV]", (0, 2000), 50),
+        ("max_track_pt", r"max track $p_T$ [MeV]", (0, 3000), 50),
     ]
 
     n_vars = len(plot_configs)

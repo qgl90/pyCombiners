@@ -34,11 +34,11 @@ def set_tracks_pid(tracks, particle_id):
             )
         p = matches[0]
 
-    mass_gev = p.mass / 1000.0  # particle stores mass in MeV
+    mass_mev = p.mass  # MeV (native LHCb unit)
     pdg_id = int(p.pdgid)
 
     shape_like = ak.ones_like(tracks["x"])
     out = {**tracks}
-    out["mass"] = shape_like * mass_gev
+    out["mass"] = shape_like * mass_mev
     out["pid"] = shape_like * pdg_id
     return out

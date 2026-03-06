@@ -120,7 +120,7 @@ def main():
         sb_str = f"S/B={ns / nb:.3f}" if nb > 0 else "B=0"
         ax_i.set_title(f"$\\eta \\in [{lo:.2f}, {hi:.2f})$  {sb_str}")
         ax_i.legend()
-        ax_i.set_xlabel(r"$m(\mu^+\mu^-)$ [GeV]")
+        ax_i.set_xlabel(r"$m(\mu^+\mu^-)$ [MeV]")
         ax_i.set_ylabel("Candidates")
 
     for i in range(n_eta_bins, len(axes_m)):

@@ -65,7 +65,7 @@ def main():
     # ================================================================
 
     # MVA track preselection
-    mva_mask = (tracks["pt"] > 0.2) & (tracks["min_ip"] > 0.06)
+    mva_mask = (tracks["pt"] > 200) & (tracks["min_ip"] > 0.06)
     if "chi2ndof" in tracks:
         mva_mask = mva_mask & (tracks["chi2ndof"] < 10)
     mva_tracks = apply_mask(tracks, mva_mask)
@@ -76,7 +76,7 @@ def main():
         return c["daughter0_best_pv_index"] == c["daughter1_best_pv_index"]
 
     def cut_sum_pt(c):
-        return c["daughter0_pt"] + c["daughter1_pt"] > 0.4
+        return c["daughter0_pt"] + c["daughter1_pt"] > 400
 
     mva_cands = combine(
         [mva_tracks, mva_tracks],
@@ -88,7 +88,7 @@ def main():
         ],
         vertex_cuts=[
             cut_max("vertex_chi2", 20.0),
-            lambda c: c["pt"] > 1.0,
+            lambda c: c["pt"] > 1000,
         ],
     )
 
@@ -107,7 +107,7 @@ def main():
         # Line selection (same as two_track_mva.py)
         sel = np.ones(len(df_mva), dtype=bool)
         sel &= (df_mva["flight_eta"].values > 2) & (df_mva["flight_eta"].values < 5)
-        sel &= df_mva["mcor"].values > 1.0
+        sel &= df_mva["mcor"].values > 1000
         sel &= df_mva["max_doca"].values < 0.2
         sel &= df_mva["vertex_z"].values >= -330.0
 
@@ -120,7 +120,7 @@ def main():
         min_daughter_pt = np.minimum(
             df_mva["daughter0_pt"].values, df_mva["daughter1_pt"].values
         )
-        sel &= min_daughter_pt > 0.2
+        sel &= min_daughter_pt > 200
 
         sel &= df_mva["composite_ip_chi2"].values < 16
 
@@ -222,13 +222,13 @@ def main():
         candidates = combine(
             [pos, neg],
             filtered_pvs,
-            track_cuts=[cut_min("pt", 1.0)],
+            track_cuts=[cut_min("pt", 1000)],
             combination_cuts=[
                 cut_max("max_doca", 0.05),
                 cut_max("spatial_chi2", 4.0),
             ],
             vertex_cuts=[
-                cut_range("mass", 4.7, 6.0),
+                cut_range("mass", 4700, 6000),
                 cut_max("pair_time_chi2", 4.0),
             ],
         )
@@ -253,14 +253,14 @@ def main():
             psel &= df_all["composite_ip_chi2"].isna() | (
                 df_all["composite_ip_chi2"] < 16
             )
-            psel &= df_all["pt"] >= 1.0
+            psel &= df_all["pt"] >= 1000
             daughter_pt_cols = sorted(
                 c
                 for c in df_all.columns
                 if c.endswith("_pt") and c.startswith("daughter")
             )
             if daughter_pt_cols:
-                psel &= np.nanmax(df_all[daughter_pt_cols].values, axis=1) >= 2.0
+                psel &= np.nanmax(df_all[daughter_pt_cols].values, axis=1) >= 2000
 
             df = df_all[psel].copy()
 

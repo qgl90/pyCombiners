@@ -95,6 +95,11 @@ In the end we have:
 }
 ```
 
+## Units
+
+All quantities follow native LHCb conventions: momentum, mass and energy in **MeV**, spatial
+coordinates in **mm**, time in **ns**.
+
 ## Event Model
 
 Since our data is loaded as a big Dict, it is natural to design our event model to the philosophy:
@@ -130,9 +135,9 @@ framework. Just use the built-in cut helpers:
 from trackcomb import cut_min, cut_max, cut_range
 
 my_cuts = [
-    cut_min("pt", 0.5),           # pt >= 0.5 GeV
+    cut_min("pt", 500),           # pt >= 500 MeV
     cut_max("min_ip_chi2", 16),   # IP chi2 <= 16
-    cut_range("mass", 0.47, 0.52) # mass in [0.47, 0.52] GeV
+    cut_range("mass", 470, 520)   # mass in [470, 520] MeV
 ]
 ```
 
@@ -140,9 +145,9 @@ Or just use a lambda for anything more complex:
 
 ```python
 my_cuts = [
-    cut_min("pt", 0.5),
-    lambda c: c["daughter0_pt"] + c["daughter1_pt"] > 1.0,  # sum pt cut
-    lambda c: c["mass"] - 0.498 < 0.02,                     # asymmetric mass window
+    cut_min("pt", 500),
+    lambda c: c["daughter0_pt"] + c["daughter1_pt"] > 1000,  # sum pt cut
+    lambda c: c["mass"] - 498 < 20,                          # asymmetric mass window
 ]
 ```
 
@@ -181,9 +186,9 @@ set_tracks_pid(neg, "mu+")
 # Combine
 candidates = combine(
     [pos, neg], pvs,
-    track_cuts=[cut_min("pt", 0.5), cut_min("min_ip", 0.05)],
+    track_cuts=[cut_min("pt", 500), cut_min("min_ip", 0.05)],
     combination_cuts=[cut_max("max_doca", 0.2), cut_min("dira", 0.9995)],
-    vertex_cuts=[cut_range("mass", 5.0, 5.8), cut_min("pt", 1.0)],
+    vertex_cuts=[cut_range("mass", 5000, 5800), cut_min("pt", 1000)],
 )
 candidates["pid"] = pdg_id("B(s)0")
 

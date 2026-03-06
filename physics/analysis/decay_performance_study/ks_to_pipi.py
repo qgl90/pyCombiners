@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 
-PDG_KS_MASS = 0.497611  # GeV
+PDG_KS_MASS = 497.611  # MeV
 
 
 def main():
@@ -54,9 +54,9 @@ def main():
     from trackcomb.plot import make_figure
 
     variables = [
-        ("pt", r"$p_T(K_S^0)$ [GeV]", np.linspace(0, 5, 11)),
+        ("pt", r"$p_T(K_S^0)$ [MeV]", np.linspace(0, 5000, 11)),
         ("eta", r"$\eta(K_S^0)$", np.linspace(2, 5, 13)),
-        ("p", r"$p(K_S^0)$ [GeV]", np.linspace(0, 50, 11)),
+        ("p", r"$p(K_S^0)$ [MeV]", np.linspace(0, 50000, 11)),
         ("vertex_z", r"Vertex $z$ [mm]", np.linspace(-200, 800, 11)),
     ]
 
@@ -99,7 +99,7 @@ def main():
     ax_m.hist(
         sel["mass"].values,
         bins=50,
-        range=(0.47, 0.52),
+        range=(470, 520),
         histtype="stepfilled",
         alpha=0.7,
         color="steelblue",
@@ -108,7 +108,7 @@ def main():
     ax_m.axvline(
         PDG_KS_MASS, color="red", linestyle="--", linewidth=1, label=r"PDG $m(K_S^0)$"
     )
-    ax_m.set_xlabel(r"$m(\pi^+\pi^-)$ [GeV]")
+    ax_m.set_xlabel(r"$m(\pi^+\pi^-)$ [MeV]")
     ax_m.set_ylabel("Candidates")
     ax_m.set_title(
         f"$K_S^0 \\to \\pi^+\\pi^-$ mass{lumi_tag}",

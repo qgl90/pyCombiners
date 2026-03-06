@@ -9,11 +9,13 @@ import pytest
 import awkward as ak
 import numpy as np
 
+from particle import literals as lp
+
 from trackcomb.combiner import combine
 from trackcomb.models import cut_max, cut_range
 from trackcomb.pid import set_tracks_pid
 
-_PION_MASS = 0.13957039
+_PION_MASS = lp.pi_plus.mass  # MeV
 
 
 # ---------------------------------------------------------------------------
@@ -34,8 +36,8 @@ class TestCombineSoASanity:
         for i in range(len(ks_candidates["mass"])):
             masses = np.asarray(ks_candidates["mass"][i])
             if len(masses) > 0:
-                assert np.all(masses >= 0.4), f"Event {i}: mass below 0.4"
-                assert np.all(masses <= 0.6), f"Event {i}: mass above 0.6"
+                assert np.all(masses >= 400), f"Event {i}: mass below 400"
+                assert np.all(masses <= 600), f"Event {i}: mass above 600"
 
     def test_charge_pattern(self, ks_candidates):
         for i in range(len(ks_candidates["mass"])):
@@ -145,7 +147,7 @@ class TestCandidateTrackFields:
                 cut_max("max_doca", 0.05),
                 cut_max("spatial_chi2", 5.0),
             ],
-            vertex_cuts=[cut_range("mass", 1.0, 2.0)],
+            vertex_cuts=[cut_range("mass", 1000, 2000)],
             use_timing=False,
         )
         assert "mass" in result
@@ -315,7 +317,7 @@ class TestCombineSoAEdgeCases(unittest.TestCase):
             [tracks, tracks],
             pvs,
             use_timing=False,
-            vertex_cuts=[lambda c: c["mass"] > 999],
+            vertex_cuts=[lambda c: c["mass"] > 999000],
         )
         n_with_cut = len(with_cut["mass"][0])
 

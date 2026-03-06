@@ -35,26 +35,26 @@ def _build_mode(mode: str) -> dict[str, Any]:
 
     if mode == "full":
         return {
-            "track_cuts": [cut_min("pt", 0.05), cut_min("min_ip", 0.1)],
+            "track_cuts": [cut_min("pt", 50), cut_min("min_ip", 0.1)],
             "combination_cuts": [
                 cut_max("max_doca", 0.2),
                 cut_max("spatial_chi2", 50.0),
             ],
             "vertex_cuts": [
-                cut_range("mass", 0.47, 0.52),
+                cut_range("mass", 470, 520),
                 cut_max("pair_time_chi2", 15.0),
             ],
         }
 
     if mode == "dist":
         return {
-            "track_cuts": [cut_min("pt", 0.06), cut_min("min_ip", 0.08)],
+            "track_cuts": [cut_min("pt", 60), cut_min("min_ip", 0.08)],
             "combination_cuts": [
                 cut_max("max_doca", 0.3),
                 cut_max("spatial_chi2", 10.0),
             ],
             "vertex_cuts": [
-                cut_range("mass", 0.47, 0.52),
+                cut_range("mass", 470, 520),
                 cut_max("pair_time_chi2", 10.0),
             ],
         }

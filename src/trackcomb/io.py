@@ -129,9 +129,9 @@ def _build_track_container(data, ak, np, flat_format=False) -> Container:
 
     qop_valid = qop[valid]
 
-    # Momentum (MeV → GeV) and charge
+    # Momentum and charge (MeV, native LHCb unit)
     p_mev = 1.0 / abs(qop_valid)
-    tracks["p"] = p_mev / 1000.0
+    tracks["p"] = p_mev
     tracks["charge"] = ak.where(qop_valid > 0, 1, -1)
 
     # Covariance: map 5x5 ROOT branches to 4x4 fields (indices 0-3 only)
