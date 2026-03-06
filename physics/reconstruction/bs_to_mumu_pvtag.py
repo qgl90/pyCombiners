@@ -83,7 +83,7 @@ def main():
         pvs,
         combination_cuts=[
             cut_max("max_doca", 1.0),
-            cut_same_pv,
+            # cut_same_pv, # Remove the same pv cut
             cut_sum_pt,
         ],
         vertex_cuts=[
