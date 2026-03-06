@@ -685,7 +685,10 @@ class TestPropagateMcTruth(unittest.TestCase):
         neg = apply_mask(tracks, tracks["charge"] < 0)
         # Use impossibly tight cut to get 0 candidates
         cands = combine(
-            [pos, neg], pvs, use_timing=False, vertex_cuts=[lambda c: c["mass"] > 9999000]
+            [pos, neg],
+            pvs,
+            use_timing=False,
+            vertex_cuts=[lambda c: c["mass"] > 9999000],
         )
         for field in (
             "mc_truth",
