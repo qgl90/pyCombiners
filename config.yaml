@@ -1,28 +1,132 @@
+output_dir: public/dev
+
 tree: BestLongTracks/TrackTuple
 
 luminosities:
-  1p5e32:
+  1p5e34:
     channels:
       ks_to_pipi:
-        input: input/minbias_1p5e32_1000evts.root
+        input: input/ntuple_minbias_1p5e34_1000evts.root
         modes:
           cheated:
             max_events: 1000
           full:
-            max_events: 0
+            max_events: 1000
           dist:
             max_events: 200
       bs_to_mumu:
-        input: input/bs2mumu_full.root
+        input: input/ntuple_bsmumu_1p5e34_1000evts.root
         modes:
           cheated:
             max_events: 1000
           full:
-            max_events: 0
+            max_events: 1000
           full_notime:
             max_events: 1000
           dist:
             max_events: 200
       track_pv_association:
-        input: input/minbias_1p5e32_1000evts.root
+        input: input/ntuple_minbias_1p5e34_1000evts.root
         max_events: 200
+      two_track_mva:
+        input: input/ntuple_bsmumu_1p5e34_1000evts.root
+        max_events: 1000
+      bs_to_mumu_pvtag:
+        input: input/ntuple_bsmumu_1p5e34_1000evts.root
+        max_events: 1000
+
+  1p3e34:
+    channels:
+      ks_to_pipi:
+        input: input/ntuple_minbias_1p3e34_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          dist:
+            max_events: 200
+      bs_to_mumu:
+        input: input/ntuple_bsmumu_1p3e34_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          full_notime:
+            max_events: 1000
+          dist:
+            max_events: 200
+      track_pv_association:
+        input: input/ntuple_minbias_1p3e34_1000evts.root
+        max_events: 200
+      two_track_mva:
+        input: input/ntuple_bsmumu_1p3e34_1000evts.root
+        max_events: 1000
+      bs_to_mumu_pvtag:
+        input: input/ntuple_bsmumu_1p3e34_1000evts.root
+        max_events: 1000
+
+  1p0e34:
+    channels:
+      ks_to_pipi:
+        input: input/ntuple_minbias_1p0e34_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          dist:
+            max_events: 200
+      bs_to_mumu:
+        input: input/ntuple_bsmumu_1p0e34_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          full_notime:
+            max_events: 1000
+          dist:
+            max_events: 200
+      track_pv_association:
+        input: input/ntuple_minbias_1p0e34_1000evts.root
+        max_events: 200
+      two_track_mva:
+        input: input/ntuple_bsmumu_1p0e34_1000evts.root
+        max_events: 1000
+      bs_to_mumu_pvtag:
+        input: input/ntuple_bsmumu_1p0e34_1000evts.root
+        max_events: 1000
+
+  run3:
+    channels:
+      ks_to_pipi:
+        input: input/ntuple_minbias_run3_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          dist:
+            max_events: 200
+      bs_to_mumu:
+        input: input/ntuple_bsmumu_run3_1000evts.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
+          full_notime:
+            max_events: 1000
+          dist:
+            max_events: 200
+      track_pv_association:
+        input: input/ntuple_minbias_run3_1000evts.root
+        max_events: 200
+      two_track_mva:
+        input: input/ntuple_bsmumu_run3_1000evts.root
+        max_events: 1000
+      bs_to_mumu_pvtag:
+        input: input/ntuple_bsmumu_run3_1000evts.root
+        max_events: 1000

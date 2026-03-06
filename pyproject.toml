@@ -16,10 +16,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-root = ["uproot>=5.0", "awkward>=2.0"]
+root = ["uproot>=5.0", "awkward>=2.0", "particle>=0.23"]
 
-[project.scripts]
-track-combiner = "trackcomb.cli:main"
+[tool.pytest.ini_options]
+
 
 [tool.setuptools]
 package-dir = {"" = "src"}

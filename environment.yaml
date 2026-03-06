@@ -1,4 +1,4 @@
-name: thesis-plots
+name: pyCombiner
 channels:
   - conda-forge
   - bioconda
@@ -31,4 +31,5 @@ dependencies:
   # format
   - yapf==0.24.0
   - clang-format
-
+  # MVA
+  - onnxruntime=*=*cpu*

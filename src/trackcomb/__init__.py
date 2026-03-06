@@ -1,80 +1,79 @@
-"""Public package exports for the particle-combination framework."""
-__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+"""Package exports."""
 
+from importlib.metadata import version, PackageNotFoundError
 
-from .combiner import ParticleCombiner, TrackCombiner
-from .composite import combination_to_track_state
-from .decay import Decay, combine, make_decay
-from .io import candidates_to_dataframe, iter_events_root, load_events_root, load_pvs_root, load_tracks_root
+try:
+    __version__ = version("track-combination-framework")
+except PackageNotFoundError:
+    __version__ = "dev"
+
 from .models import (
-    CombinationCuts,
-    CombinationResult,
-    EventInput,
-    LorentzVector,
-    ParticleHypothesis,
-    PrimaryVertex,
-    TrackPreselection,
-    TrackState,
+    Container,
+    CutFunction,
+    infer_n_body,
+    apply_mask,
+    apply_cuts,
+    cut_min,
+    cut_max,
+    cut_range,
+    pick_along_inner,
 )
-from .overlap import has_shared_tracks, remove_overlaps
+from .io import (
+    load_tracks_root,
+    load_pvs_root,
+    load_events_root,
+    iter_events_root,
+    candidates_to_parquet,
+    candidates_to_dataframe,
+    extract_daughter_fields,
+)
+from .physics import (
+    ip_to_pvs,
+    flight_corrected_dt,
+    tracks_pv_association,
+)
+from .combiner import combine
+from .truth import bkgcat, count_true_decays, truth_match_candidates
+
 from .pid import (
-    make_electron,
-    make_kaon,
-    make_muon,
-    make_pion,
-    make_proton,
-    particle_hypothesis_from_name,
+    pdg_id,
+    set_tracks_pid,
 )
-from .truth import (
-    count_true_decays,
-    filter_tracks_by_ancestor,
-    get_true_decay_groups,
-    truth_match,
-    truth_match_candidates,
-)
-from .utils import best_candidate, filter_candidates
+
+from .plot import make_figure
 
 __all__ = [
-    # Core
-    "ParticleCombiner",
-    "TrackCombiner",
-    "combination_to_track_state",
-    # Decay + combine
-    "Decay",
-    "make_decay",
-    "combine",
-    # Models
-    "TrackState",
-    "PrimaryVertex",
-    "EventInput",
-    "LorentzVector",
-    "CombinationResult",
-    "ParticleHypothesis",
-    "TrackPreselection",
-    "CombinationCuts",
-    # PID
-    "make_pion",
-    "make_kaon",
-    "make_proton",
-    "make_muon",
-    "make_electron",
-    "particle_hypothesis_from_name",
-    # I/O
-    "candidates_to_dataframe",
+    # Container utilities
+    "Container",
+    "CutFunction",
+    "infer_n_body",
+    "apply_mask",
+    "apply_cuts",
+    "cut_min",
+    "cut_max",
+    "cut_range",
+    "pick_along_inner",
+    # IO
     "load_tracks_root",
     "load_pvs_root",
-    "iter_events_root",
     "load_events_root",
-    # Truth
-    "truth_match",
-    "truth_match_candidates",
+    "iter_events_root",
+    "candidates_to_parquet",
+    "candidates_to_dataframe",
+    "extract_daughter_fields",
+    # Physics (user-facing only)
+    "ip_to_pvs",
+    "flight_corrected_dt",
+    "tracks_pv_association",
+    # Pipeline
+    "combine",
+    # Truth matching
+    "bkgcat",
     "count_true_decays",
-    "filter_tracks_by_ancestor",
-    "get_true_decay_groups",
-    # Overlap
-    "has_shared_tracks",
-    "remove_overlaps",
-    # Utils
-    "filter_candidates",
-    "best_candidate",
+    "truth_match_candidates",
+    # PID
+    "pdg_id",
+    "set_tracks_pid",
+    # Plotting
+    "make_figure",
 ]
