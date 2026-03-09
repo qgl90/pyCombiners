@@ -11,9 +11,10 @@ import awkward as ak
 import numpy as np
 
 from trackcomb.io import (
-    load_events_root,
-    iter_events_root,
+    load_events,
+    load_events_in_slices,
 )
+from trackcomb.runner import run_reconstruction
 from trackcomb.models import (
     Container,
     apply_cuts,
@@ -35,7 +36,7 @@ def _root_available() -> bool:
 
 @functools.lru_cache(maxsize=None)
 def _cached_events():
-    return load_events_root(_ROOT_FILE, _TREE, max_events=_MAX_EVENTS)
+    return load_events(_ROOT_FILE, _TREE, max_events=_MAX_EVENTS)
 
 
 @unittest.skipUnless(_root_available(), "ROOT test file not available")
@@ -50,11 +51,11 @@ class TestIterEventsRoot(unittest.TestCase):
         chunk_pvs_list = []
         chunk_run_nums = []
         chunk_evt_nums = []
-        for t, p, info in iter_events_root(
+        for t, p, info in load_events_in_slices(
             _ROOT_FILE,
             _TREE,
             max_events=_MAX_EVENTS,
-            chunk_size=3,
+            slice_size=3,
         ):
             chunk_tracks_list.append(t)
             chunk_pvs_list.append(p)
@@ -77,6 +78,59 @@ class TestIterEventsRoot(unittest.TestCase):
                 int(ak.count(all_x[i])),
                 int(ak.count(full_tracks["x"][i])),
             )
+
+
+@unittest.skipUnless(_root_available(), "ROOT test file not available")
+class TestRunReconstruction(unittest.TestCase):
+    """Validate run_reconstruction interface."""
+
+    def test_collects_return_values(self):
+        """User function returns something → collected in list."""
+
+        def my_reco(events):
+            return len(events["tracks"]["x"])
+
+        results = run_reconstruction(
+            my_reco,
+            input_data=_ROOT_FILE,
+            tree_name=_TREE,
+            max_events=_MAX_EVENTS,
+            slice_size=1,
+        )
+        self.assertIsInstance(results, list)
+        self.assertEqual(sum(results), _MAX_EVENTS)
+
+    def test_returns_none_when_user_returns_nothing(self):
+        """User function returns None → run_reconstruction returns None."""
+        called = []
+
+        def my_reco(events):
+            called.append(1)
+
+        result = run_reconstruction(
+            my_reco,
+            input_data=_ROOT_FILE,
+            tree_name=_TREE,
+            max_events=_MAX_EVENTS,
+        )
+        self.assertIsNone(result)
+        self.assertGreater(len(called), 0)
+
+    def test_events_dict_has_expected_keys(self):
+        """events dict should contain tracks, pvs, run_number, event_number."""
+        seen_keys = set()
+
+        def my_reco(events):
+            seen_keys.update(events.keys())
+
+        run_reconstruction(
+            my_reco,
+            input_data=_ROOT_FILE,
+            tree_name=_TREE,
+            max_events=_MAX_EVENTS,
+        )
+        for key in ("tracks", "pvs", "run_number", "event_number"):
+            self.assertIn(key, seen_keys)
 
 
 class TestModelUtilities(unittest.TestCase):

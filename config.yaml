@@ -34,6 +34,13 @@ luminosities:
       bs_to_mumu_pvtag:
         input: input/ntuple_bsmumu_1p5e34_1000evts.root
         max_events: 1000
+      bs_to_jpsiphi:
+        input: input/ntuple_bsjpsiphi_1p5e34_full.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
 
   1p3e34:
     channels:
@@ -66,6 +73,13 @@ luminosities:
       bs_to_mumu_pvtag:
         input: input/ntuple_bsmumu_1p3e34_1000evts.root
         max_events: 1000
+      bs_to_jpsiphi:
+        input: input/ntuple_bsjpsiphi_1p3e34_full.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
 
   1p0e34:
     channels:
@@ -98,6 +112,13 @@ luminosities:
       bs_to_mumu_pvtag:
         input: input/ntuple_bsmumu_1p0e34_1000evts.root
         max_events: 1000
+      bs_to_jpsiphi:
+        input: input/ntuple_bsjpsiphi_1p0e34_full.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000
 
   run3:
     channels:
@@ -130,3 +151,10 @@ luminosities:
       bs_to_mumu_pvtag:
         input: input/ntuple_bsmumu_run3_1000evts.root
         max_events: 1000
+      bs_to_jpsiphi:
+        input: input/ntuple_bsjpsiphi_run3_full.root
+        modes:
+          cheated:
+            max_events: 1000
+          full:
+            max_events: 1000

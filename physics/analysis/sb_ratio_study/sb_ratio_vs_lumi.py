@@ -27,7 +27,9 @@ def _lumi_to_value(label):
 
     m = re.match(r"(\d+)p(\d+)e(\d+)", label)
     if m:
-        return float(f"{m.group(1)}.{m.group(2)}") * 10 ** (int(m.group(3)) - 34)
+        return float(f"{m.group(1)}.{m.group(2)}") * 10 ** (
+            int(m.group(3)) - 34
+        )
     return None
 
 
@@ -41,7 +43,9 @@ def main():
         required=True,
         help="lumi=path pairs, e.g. 1p5e34=full.parquet 1p3e34=full.parquet",
     )
-    parser.add_argument("--out-dir", required=True, help="Output directory for plots")
+    parser.add_argument(
+        "--out-dir", required=True, help="Output directory for plots"
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -57,22 +61,13 @@ def main():
         lumis.append(lumi)
         frames.append(pd.read_parquet(path))
 
-    eta_bins = np.linspace(2, 5, 13)
-    centers = 0.5 * (eta_bins[:-1] + eta_bins[1:])
-
-    # Compute S/B per lumi (overall and per eta bin)
+    # Compute overall S/B per lumi
     overall_sb = []
-    per_eta_sb = []
     for df in frames:
         sig = df[df["is_signal"]]
         bkg = df[~df["is_signal"]]
         ns, nb = len(sig), len(bkg)
         overall_sb.append(ns / max(nb, 1))
-
-        n_sig, _ = np.histogram(sig["eta"].values, bins=eta_bins)
-        n_bkg, _ = np.histogram(bkg["eta"].values, bins=eta_bins)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            per_eta_sb.append(np.where(n_bkg > 0, n_sig / n_bkg, np.nan))
 
     # Print summary
     print(f"\n{'lumi':>10}  {'S':>6}  {'B':>6}  {'S/B':>10}")
@@ -82,7 +77,6 @@ def main():
         nb = (~df["is_signal"]).sum()
         print(f"{lumi:>10}  {ns:6d}  {nb:6d}  {sb:10.4f}")
 
-    import matplotlib.pyplot as plt
     from trackcomb.plot import make_figure
 
     # ---- Plot 1: overall S/B vs lumi ----
@@ -104,34 +98,19 @@ def main():
         linewidth=0.5,
     )
     ax1.set_xticks(x_sorted)
-    ax1.set_xticklabels([f"{l}\n({v})" for l, v in zip(labels_sorted, x_sorted)])
+    ax1.set_xticklabels(
+        [f"{l}\n({v})" for l, v in zip(labels_sorted, x_sorted)]
+    )
     ax1.set_xlabel(r"Luminosity [$\times 10^{34}$ cm$^{-2}$s$^{-1}$]")
     ax1.set_ylabel("S / B")
     ax1.set_title(r"$B_s^0 \to \mu^+\mu^-$ overall S/B vs luminosity")
     for xv, v in zip(x_sorted, sb_sorted):
         ax1.text(xv, v, f"{v:.4f}", ha="center", va="bottom")
     fig1.tight_layout()
-    fig1.savefig(out_dir / "bs_sb_vs_lumi.png", dpi=150)
-    print(f"\nSaved {out_dir / 'bs_sb_vs_lumi.png'}")
+    fig1.savefig(out_dir / "sb_ratio_vs_lumi.png", dpi=150)
+    print(f"\nSaved {out_dir / 'sb_ratio_vs_lumi.png'}")
 
-    # ---- Plot 2: S/B vs eta, one curve per lumi ----
-    fig2, ax2 = make_figure(figsize=(16, 12))
-    colors = plt.cm.Set1(np.linspace(0, 1, max(len(lumis), 3)))
-    for i, (lumi, sb_eta) in enumerate(zip(lumis, per_eta_sb)):
-        mask = ~np.isnan(sb_eta)
-        ax2.plot(
-            centers[mask], sb_eta[mask], "o-", color=colors[i], label=lumi, markersize=5
-        )
-    ax2.set_xlabel(r"$\eta(B_s^0)$")
-    ax2.set_ylabel("S / B")
-    ax2.set_title(r"$B_s^0 \to \mu^+\mu^-$ S/B vs $\eta$ by luminosity")
-    ax2.legend()
-    ax2.set_xlim(eta_bins[0], eta_bins[-1])
-    fig2.tight_layout()
-    fig2.savefig(out_dir / "bs_sb_vs_eta_by_lumi.png", dpi=150)
-    print(f"Saved {out_dir / 'bs_sb_vs_eta_by_lumi.png'}")
-
-    # ---- Plot 3: mass distribution per lumi (signal vs background) ----
+    # ---- Plot 2: mass distribution per lumi (signal vs background) ----
     n_lumis = len(lumis)
     ncols = min(n_lumis, 2)
     nrows = (n_lumis + ncols - 1) // ncols
@@ -180,8 +159,8 @@ def main():
 
     fig3.suptitle(r"$B_s^0 \to \mu^+\mu^-$ mass distribution by luminosity")
     fig3.tight_layout()
-    fig3.savefig(out_dir / "bs_mass_by_lumi.png", dpi=150)
-    print(f"Saved {out_dir / 'bs_mass_by_lumi.png'}")
+    fig3.savefig(out_dir / "mass_vs_lumi.png", dpi=150)
+    print(f"Saved {out_dir / 'mass_vs_lumi.png'}")
 
 
 if __name__ == "__main__":

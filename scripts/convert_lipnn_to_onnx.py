@@ -47,8 +47,12 @@ def _add_groupsort2(nodes, initializers, input_name, output_name, width):
     )
 
     # Element-wise min / max
-    nodes.append(helper.make_node("Min", [f"{pfx}_even", f"{pfx}_odd"], [f"{pfx}_min"]))
-    nodes.append(helper.make_node("Max", [f"{pfx}_even", f"{pfx}_odd"], [f"{pfx}_max"]))
+    nodes.append(
+        helper.make_node("Min", [f"{pfx}_even", f"{pfx}_odd"], [f"{pfx}_min"])
+    )
+    nodes.append(
+        helper.make_node("Max", [f"{pfx}_even", f"{pfx}_odd"], [f"{pfx}_max"])
+    )
 
     # Interleave: unsqueeze → concat → reshape
     nodes.append(
@@ -63,11 +67,16 @@ def _add_groupsort2(nodes, initializers, input_name, output_name, width):
     )
     nodes.append(
         helper.make_node(
-            "Concat", [f"{pfx}_min_us", f"{pfx}_max_us"], [f"{pfx}_cat"], axis=2
+            "Concat",
+            [f"{pfx}_min_us", f"{pfx}_max_us"],
+            [f"{pfx}_cat"],
+            axis=2,
         )
     )
     nodes.append(
-        helper.make_node("Reshape", [f"{pfx}_cat", f"{pfx}_shape"], [output_name])
+        helper.make_node(
+            "Reshape", [f"{pfx}_cat", f"{pfx}_shape"], [output_name]
+        )
     )
 
 
@@ -97,7 +106,9 @@ def convert(json_path, onnx_path):
     current = "input"
 
     for i, layer_idx in enumerate(layer_indices):
-        W = np.array(data[f"sigmanet.nn.{layer_idx}.weight{suffix}"], dtype=np.float32)
+        W = np.array(
+            data[f"sigmanet.nn.{layer_idx}.weight{suffix}"], dtype=np.float32
+        )
         b = np.array(data[f"sigmanet.nn.{layer_idx}.bias"], dtype=np.float32)
         is_last = i == len(layer_indices) - 1
 
@@ -105,11 +116,15 @@ def convert(json_path, onnx_path):
         initializers.append(numpy_helper.from_array(W.T, name=f"W{i}"))
         initializers.append(numpy_helper.from_array(b, name=f"b{i}"))
 
-        nodes.append(helper.make_node("MatMul", [current, f"W{i}"], [f"mm{i}"]))
+        nodes.append(
+            helper.make_node("MatMul", [current, f"W{i}"], [f"mm{i}"])
+        )
         nodes.append(helper.make_node("Add", [f"mm{i}", f"b{i}"], [f"lin{i}"]))
 
         if not is_last:
-            _add_groupsort2(nodes, initializers, f"lin{i}", f"gs{i}", W.shape[0])
+            _add_groupsort2(
+                nodes, initializers, f"lin{i}", f"gs{i}", W.shape[0]
+            )
             current = f"gs{i}"
         else:
             current = f"lin{i}"
@@ -119,20 +134,30 @@ def convert(json_path, onnx_path):
         numpy_helper.from_array(constraints.reshape(-1, 1), name="constraints")
     )
     initializers.append(
-        numpy_helper.from_array(np.array([sigma], dtype=np.float32), name="sigma")
+        numpy_helper.from_array(
+            np.array([sigma], dtype=np.float32), name="sigma"
+        )
     )
 
-    nodes.append(helper.make_node("MatMul", ["input", "constraints"], ["mono_dot"]))
+    nodes.append(
+        helper.make_node("MatMul", ["input", "constraints"], ["mono_dot"])
+    )
     nodes.append(helper.make_node("Mul", ["mono_dot", "sigma"], ["mono"]))
     nodes.append(helper.make_node("Add", [current, "mono"], ["pre_sigmoid"]))
     nodes.append(helper.make_node("Sigmoid", ["pre_sigmoid"], ["output"]))
 
     # Build graph and model
-    X = helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, n_input])
+    X = helper.make_tensor_value_info(
+        "input", TensorProto.FLOAT, [None, n_input]
+    )
     Y = helper.make_tensor_value_info("output", TensorProto.FLOAT, [None, 1])
 
-    graph = helper.make_graph(nodes, "LipschitzNN", [X], [Y], initializer=initializers)
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
+    graph = helper.make_graph(
+        nodes, "LipschitzNN", [X], [Y], initializer=initializers
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 13)]
+    )
 
     onnx.checker.check_model(model)
     onnx.save(model, onnx_path)
@@ -148,7 +173,8 @@ def convert(json_path, onnx_path):
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("input", help="Input JSON model file")
     p.add_argument("output", help="Output ONNX model file")

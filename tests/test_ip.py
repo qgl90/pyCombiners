@@ -7,7 +7,7 @@ import unittest
 import awkward as ak
 import numpy as np
 
-from trackcomb.physics import ip_to_pvs
+from trackcomb.physics import compute_track_pv_pairs
 
 
 class TestBatchIPEdgeCases(unittest.TestCase):
@@ -42,7 +42,8 @@ class TestBatchIPEdgeCases(unittest.TestCase):
             "cov_1_1": ak.Array([[], [0.01]]),
             "time": ak.Array([[], [0.0]]),
         }
-        ip, chi2 = ip_to_pvs(tracks, pvs)
+        pairs = compute_track_pv_pairs(tracks, pvs)
+        ip = pairs["ip"]
         self.assertEqual(len(ip[0]), 0)  # event 0: no tracks
         self.assertEqual(len(ip[1]), 2)  # event 1: 2 tracks
 
@@ -73,9 +74,11 @@ class TestBatchIPEdgeCases(unittest.TestCase):
             "cov_1_0": ak.Array([[0.0]]),
             "cov_1_1": ak.Array([[0.0]]),
         }
-        ip, chi2 = ip_to_pvs(tracks, pvs)
+        pairs = compute_track_pv_pairs(tracks, pvs)
         # Track at (1,0) relative to PV at (0,0) — same z, no extrapolation
-        np.testing.assert_allclose(float(ip[0][0][0]), 1.0, atol=1e-15)
+        np.testing.assert_allclose(
+            float(pairs["ip"][0][0][0]), 1.0, atol=1e-15
+        )
 
 
 if __name__ == "__main__":

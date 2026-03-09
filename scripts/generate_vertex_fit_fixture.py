@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Generate vertex_fit_xyz test fixture from real tracks.
-
-Computes per-candidate reference via np.linalg.solve (independent of batch code).
-"""
+"""Generate vertex_fit_3d test fixture from real tracks."""
 
 from __future__ import annotations
 
@@ -11,7 +8,7 @@ from pathlib import Path
 import awkward as ak
 import numpy as np
 
-from trackcomb.io import load_tracks_root
+from trackcomb.io import load_events
 
 ROOT_FILE = (
     Path(__file__).resolve().parent.parent
@@ -20,7 +17,9 @@ ROOT_FILE = (
 )
 TREE = "BestLongTracks/TrackTuple"
 OUT_PATH = (
-    Path(__file__).resolve().parent.parent / "input" / "test_vertex_fit_reference.npz"
+    Path(__file__).resolve().parent.parent
+    / "input"
+    / "test_vertex_fit_reference.npz"
 )
 
 COV_KEYS = [
@@ -116,7 +115,7 @@ def main():
     if not ROOT_FILE.exists():
         raise FileNotFoundError(f"ROOT file not found: {ROOT_FILE}")
 
-    tracks = load_tracks_root(str(ROOT_FILE), TREE, max_events=1)
+    tracks, _, _ = load_events(str(ROOT_FILE), TREE, max_events=1)
 
     # Get tracks from event 0
     fields = {}

@@ -14,8 +14,12 @@ def main():
         description="Bs -> mu+mu- S/B ratio vs eta",
     )
     parser.add_argument("--full", required=True, help="Path to full.parquet")
-    parser.add_argument("--out-dir", required=True, help="Output directory for plots")
-    parser.add_argument("--lumi", default="", help="Luminosity label for plot titles")
+    parser.add_argument(
+        "--out-dir", required=True, help="Output directory for plots"
+    )
+    parser.add_argument(
+        "--lumi", default="", help="Luminosity label for plot titles"
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out_dir)
@@ -43,7 +47,9 @@ def main():
     total_sig = len(sig)
     total_bkg = len(bkg)
     total_sb = total_sig / max(total_bkg, 1)
-    print(f"\nSignal: {total_sig}, Background: {total_bkg}, S/B = {total_sb:.4f}")
+    print(
+        f"\nSignal: {total_sig}, Background: {total_bkg}, S/B = {total_sb:.4f}"
+    )
     print(f"\n{'eta bin':>12}  {'S':>6}  {'B':>6}  {'S/B':>10}")
     print("-" * 40)
     for i in range(len(centers)):
@@ -75,8 +81,8 @@ def main():
     )
     ax.set_xlim(eta_bins[0], eta_bins[-1])
     fig.tight_layout()
-    fig.savefig(out_dir / "bs_sb_vs_eta.png", dpi=150)
-    print(f"\nSaved {out_dir / 'bs_sb_vs_eta.png'}")
+    fig.savefig(out_dir / "sb_ratio_vs_eta.png", dpi=150)
+    print(f"\nSaved {out_dir / 'sb_ratio_vs_eta.png'}")
 
     # ---- Mass distribution per eta bin ----
     n_eta_bins = len(eta_bins) - 1
@@ -130,8 +136,8 @@ def main():
         f"$B_s^0 \\to \\mu^+\\mu^-$ mass per $\\eta$ bin{lumi_tag}",
     )
     fig_m.tight_layout()
-    fig_m.savefig(out_dir / "bs_mass_vs_eta.png", dpi=150)
-    print(f"Saved {out_dir / 'bs_mass_vs_eta.png'}")
+    fig_m.savefig(out_dir / "mass_vs_eta.png", dpi=150)
+    print(f"Saved {out_dir / 'mass_vs_eta.png'}")
 
 
 if __name__ == "__main__":

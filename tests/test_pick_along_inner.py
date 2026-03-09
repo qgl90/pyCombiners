@@ -1,4 +1,4 @@
-"""Tests for pick_along_inner — jagged inner-axis selection."""
+"""Tests for pick_inner — jagged inner-axis selection."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import awkward as ak
 import numpy as np
 import pytest
 
-from trackcomb import pick_along_inner
+from trackcomb import pick_inner
 
 
 class TestPickAlongInner:
@@ -21,28 +21,28 @@ class TestPickAlongInner:
             ]
         )
         idx = ak.Array([[2, 0, 3], [1, 2]])
-        result = pick_along_inner(arr, idx)
+        result = pick_inner(arr, idx)
         expected = ak.Array([[12, 20, 33], [41, 52]])
         assert result.tolist() == expected.tolist()
 
     def test_single_event(self):
         arr = ak.Array([[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]])
         idx = ak.Array([[0, 2]])
-        result = pick_along_inner(arr, idx)
+        result = pick_inner(arr, idx)
         assert result.tolist() == [[1.0, 6.0]]
 
     def test_single_pv(self):
         # Each track sees exactly 1 PV — idx must be 0 everywhere
         arr = ak.Array([[[100], [200], [300]]])
         idx = ak.Array([[0, 0, 0]])
-        result = pick_along_inner(arr, idx)
+        result = pick_inner(arr, idx)
         assert result.tolist() == [[100, 200, 300]]
 
     def test_empty_event(self):
         # Event 0 has tracks, event 1 is empty
         arr = ak.Array([[[1, 2], [3, 4]], []])
         idx = ak.Array([[1, 0], []])
-        result = pick_along_inner(arr, idx)
+        result = pick_inner(arr, idx)
         assert result.tolist() == [[2, 3], []]
 
     def test_many_events(self):
@@ -63,7 +63,7 @@ class TestPickAlongInner:
 
         arr = ak.Array(lists)
         idx = ak.Array(idx_lists)
-        result = pick_along_inner(arr, idx)
+        result = pick_inner(arr, idx)
 
         for e in range(n_events):
             np.testing.assert_allclose(result[e].tolist(), expected[e])
