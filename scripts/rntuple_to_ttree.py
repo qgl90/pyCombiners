@@ -57,12 +57,18 @@ def main():
     parser = argparse.ArgumentParser(description="Convert RNTuple to TTree")
     parser.add_argument("input", help="Input ROOT file (RNTuple)")
     parser.add_argument("output", help="Output ROOT file (TTree)")
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple", help="Tree name")
-    parser.add_argument("--chunk", type=int, default=100, help="Chunk size for reading")
+    parser.add_argument(
+        "--tree", default="BestLongTracks/TrackTuple", help="Tree name"
+    )
+    parser.add_argument(
+        "--chunk", type=int, default=100, help="Chunk size for reading"
+    )
     parser.add_argument(
         "--compression", choices=["zstd", "zlib", "lz4"], default="zstd"
     )
-    parser.add_argument("--level", type=int, default=1, help="Compression level")
+    parser.add_argument(
+        "--level", type=int, default=1, help="Compression level"
+    )
     args = parser.parse_args()
 
     if not Path(args.input).exists():

@@ -2,216 +2,203 @@
 
 from __future__ import annotations
 
-__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+__author__ = [
+    "Renato Quagliani <rquaglia@cern.ch>",
+    "Jiahui Zhuo <jiahui.zhuo@cern.ch>",
+]
 
-from hepunits import c_light as C_LIGHT_MM_PER_NS  # mm/ns
-
+import awkward as ak
 import numpy as np
+from hepunits import c_light
+
+from .configurable import configurable
+from .models import (
+    gather_daughters_stack,
+    gather_jagged,
+    get_daughter,
+    n_daughters,
+)
+from .linalg import (
+    inv_3x3_sym,
+    mahalanobis_2x2,
+    mahalanobis_3x3,
+    solve_2x2,
+    solve_3x3_sym,
+)
 
 
-# ---------------------------------------------------------------------------
-# Shared linear-algebra helpers
-# ---------------------------------------------------------------------------
+def _flatten_field(container, field):
+    """Flatten a jagged field to a 1D numpy array."""
+    return np.asarray(ak.flatten(container[field]))
 
 
-def _mahalanobis_2x2(dx, dy, cxx, cxy, cyy):
-    """Batch 2x2 Mahalanobis chi2; falls back to dx^2+dy^2 if singular."""
-    cov = np.empty(dx.shape + (2, 2))
-    cov[..., 0, 0] = cxx
-    cov[..., 0, 1] = cxy
-    cov[..., 1, 0] = cxy
-    cov[..., 1, 1] = cyy
+def _pair_indices(counts_a, counts_b):
+    """Build flat (a_idx, b_idx, evt_idx, pair_counts) for all cross-event pairs."""
+    pair_counts = counts_a * counts_b
+    total_pairs = int(pair_counts.sum())
 
-    det = np.linalg.det(cov)
-    singular = np.abs(det) < 1e-18
+    if total_pairs == 0:
+        empty = np.empty(0, dtype=np.int64)
+        return empty, empty, empty, pair_counts
 
-    r = np.stack([dx, dy], axis=-1)
-    cov_inv = np.zeros_like(cov)
-    good = ~singular
-    if np.any(good):
-        cov_inv[good] = np.linalg.inv(cov[good])
-    chi2 = np.einsum("...i,...ij,...j->...", r, cov_inv, r)
-    return np.where(singular, dx**2 + dy**2, chi2)
+    # Offsets for each collection
+    a_offsets = np.empty(len(counts_a) + 1, dtype=np.int64)
+    a_offsets[0] = 0
+    np.cumsum(counts_a, out=a_offsets[1:])
+    b_offsets = np.empty(len(counts_b) + 1, dtype=np.int64)
+    b_offsets[0] = 0
+    np.cumsum(counts_b, out=b_offsets[1:])
+
+    # Event index for each pair
+    evt_per_pair = np.repeat(np.arange(len(pair_counts)), pair_counts)
+
+    # Within each event's block of pairs, compute local index 0..n_pairs-1
+    pair_offsets = np.empty(len(pair_counts) + 1, dtype=np.int64)
+    pair_offsets[0] = 0
+    np.cumsum(pair_counts, out=pair_offsets[1:])
+    local_idx = np.arange(total_pairs) - pair_offsets[evt_per_pair]
+
+    # local_idx = a_local * n_b + b_local
+    nb = counts_b[evt_per_pair]
+    a_local = local_idx // nb
+    b_local = local_idx % nb
+
+    a_idx = a_offsets[evt_per_pair] + a_local
+    b_idx = b_offsets[evt_per_pair] + b_local
+
+    return a_idx, b_idx, evt_per_pair, pair_counts
 
 
-# ---------------------------------------------------------------------------
-# IP computation
-# ---------------------------------------------------------------------------
+def _unflatten_3d(flat_arr, track_counts, pv_counts):
+    """Reshape flat pair array to awkward (events, tracks, pvs)."""
+    # Inner: each track has pv_counts[evt] pvs
+    inner_counts = np.repeat(pv_counts, track_counts)
+    return ak.unflatten(ak.unflatten(flat_arr, inner_counts), track_counts)
 
 
-def ip_to_pvs(tracks, pvs):
-    """Compute IP and IP chi2 for all (track, PV) pairs.
+def _write_best_pv_fields(container, pvs, pick_fn):
+    """Write best_pv_* fields into *container* for every field in *pvs*."""
+    for field in pvs:
+        if field.startswith("_"):
+            continue
+        container[f"best_pv_{field}"] = pick_fn(field)
 
-    Returns (ip, ip_chi2), both shape (events, tracks, pvs).
-    """
-    import awkward as ak
 
-    def _bc(t_arr, pv_arr):
-        return ak.unzip(ak.cartesian([t_arr, pv_arr], axis=1, nested=True))
+def compute_track_pv_pairs(tracks, pvs):
+    """Compute IP, IP chi2, and dt for all (track, PV) pairs."""
+    track_counts = ak.to_numpy(ak.num(tracks["x"]))
+    pv_counts = ak.to_numpy(ak.num(pvs["x"]))
+    t_idx, p_idx, evt_idx, pair_counts = _pair_indices(track_counts, pv_counts)
 
-    # Broadcast positions and slopes
-    t_x, pv_x = _bc(tracks["x"], pvs["x"])
-    t_y, pv_y = _bc(tracks["y"], pvs["y"])
-    t_z, pv_z = _bc(tracks["z"], pvs["z"])
-    t_tx, _ = _bc(tracks["tx"], pvs["z"])
-    t_ty, _ = _bc(tracks["ty"], pvs["z"])
+    # Flatten all needed fields once
+    t_x = _flatten_field(tracks, "x")[t_idx]
+    t_y = _flatten_field(tracks, "y")[t_idx]
+    t_z = _flatten_field(tracks, "z")[t_idx]
+    t_tx = _flatten_field(tracks, "tx")[t_idx]
+    t_ty = _flatten_field(tracks, "ty")[t_idx]
 
-    # Track covariance (4x4 lower-tri fields)
-    t_c00, _ = _bc(tracks["cov_0_0"], pvs["z"])
-    t_c10, _ = _bc(tracks["cov_1_0"], pvs["z"])
-    t_c11, _ = _bc(tracks["cov_1_1"], pvs["z"])
-    t_c20, _ = _bc(tracks["cov_2_0"], pvs["z"])
-    t_c21, _ = _bc(tracks["cov_2_1"], pvs["z"])
-    t_c22, _ = _bc(tracks["cov_2_2"], pvs["z"])
-    t_c30, _ = _bc(tracks["cov_3_0"], pvs["z"])
-    t_c31, _ = _bc(tracks["cov_3_1"], pvs["z"])
-    t_c32, _ = _bc(tracks["cov_3_2"], pvs["z"])
-    t_c33, _ = _bc(tracks["cov_3_3"], pvs["z"])
-
-    # PV covariance (XY 2x2 only)
-    _, pv_c00 = _bc(tracks["z"], pvs["cov_0_0"])
-    _, pv_c10 = _bc(tracks["z"], pvs["cov_1_0"])
-    _, pv_c11 = _bc(tracks["z"], pvs["cov_1_1"])
+    p_x = _flatten_field(pvs, "x")[p_idx]
+    p_y = _flatten_field(pvs, "y")[p_idx]
+    p_z = _flatten_field(pvs, "z")[p_idx]
 
     # Extrapolate track to PV z
-    dz = pv_z - t_z
+    dz = p_z - t_z
     x_ext = t_x + t_tx * dz
     y_ext = t_y + t_ty * dz
+    dx = x_ext - p_x
+    dy = y_ext - p_y
 
-    # 2D displacement
-    dx = x_ext - pv_x
-    dy = y_ext - pv_y
+    # IP
+    ip_flat = np.sqrt(dx**2 + dy**2)
 
-    # Impact parameter
-    ip = (dx**2 + dy**2) ** 0.5
+    # Track covariance fields
+    t_c00 = _flatten_field(tracks, "cov_0_0")[t_idx]
+    t_c10 = _flatten_field(tracks, "cov_1_0")[t_idx]
+    t_c11 = _flatten_field(tracks, "cov_1_1")[t_idx]
+    t_c20 = _flatten_field(tracks, "cov_2_0")[t_idx]
+    t_c21 = _flatten_field(tracks, "cov_2_1")[t_idx]
+    t_c22 = _flatten_field(tracks, "cov_2_2")[t_idx]
+    t_c30 = _flatten_field(tracks, "cov_3_0")[t_idx]
+    t_c31 = _flatten_field(tracks, "cov_3_1")[t_idx]
+    t_c32 = _flatten_field(tracks, "cov_3_2")[t_idx]
+    t_c33 = _flatten_field(tracks, "cov_3_3")[t_idx]
+
+    # PV covariance
+    p_c00 = _flatten_field(pvs, "cov_0_0")[p_idx]
+    p_c10 = _flatten_field(pvs, "cov_1_0")[p_idx]
+    p_c11 = _flatten_field(pvs, "cov_1_1")[p_idx]
 
     # Propagated track XY covariance at PV z
-    # Matches legacy extrapolate_xy_cov:
-    #   var_x = c[0][0] + 2*dz*c[0][2] + dz²*c[2][2]
-    #   var_y = c[1][1] + 2*dz*c[1][3] + dz²*c[3][3]
-    #   cov_xy = c[0][1] + dz*c[0][3] + dz*c[1][2] + dz²*c[2][3]
-    var_x = t_c00 + 2.0 * dz * t_c20 + dz**2 * t_c22
-    var_y = t_c11 + 2.0 * dz * t_c31 + dz**2 * t_c33
-    cov_xy = t_c10 + dz * t_c30 + dz * t_c21 + dz**2 * t_c32
+    dz2 = dz**2
+    var_x = t_c00 + 2.0 * dz * t_c20 + dz2 * t_c22
+    var_y = t_c11 + 2.0 * dz * t_c31 + dz2 * t_c33
+    cov_xy = t_c10 + dz * t_c30 + dz * t_c21 + dz2 * t_c32
 
     # Total covariance = track + PV
-    tot_xx = var_x + pv_c00
-    tot_xy = cov_xy + pv_c10
-    tot_yy = var_y + pv_c11
-
-    # Weighted chi2 via np.linalg on flattened arrays
-    import numpy as np
-
-    flat_chi2 = _mahalanobis_2x2(
-        np.asarray(ak.flatten(dx, axis=None)),
-        np.asarray(ak.flatten(dy, axis=None)),
-        np.asarray(ak.flatten(tot_xx, axis=None)),
-        np.asarray(ak.flatten(tot_xy, axis=None)),
-        np.asarray(ak.flatten(tot_yy, axis=None)),
+    chi2_flat = mahalanobis_2x2(
+        dx, dy, var_x + p_c00, cov_xy + p_c10, var_y + p_c11
     )
-    # Reconstruct the 3D jagged structure (events, tracks, pvs)
-    counts_inner = ak.flatten(ak.num(dx, axis=2))  # pvs per track
-    counts_outer = ak.num(dx, axis=1)  # tracks per event
-    ip_chi2 = ak.unflatten(ak.unflatten(flat_chi2, counts_inner), counts_outer)
 
-    return ip, ip_chi2
+    result = {
+        "ip": _unflatten_3d(ip_flat, track_counts, pv_counts),
+        "ip_chi2": _unflatten_3d(chi2_flat, track_counts, pv_counts),
+        "track_counts": track_counts,
+        "pv_counts": pv_counts,
+    }
 
+    # Flight-corrected dt (only when both tracks and PVs have time)
+    if "time" in tracks and "time" in pvs:
+        t_time = _flatten_field(tracks, "time")[t_idx]
+        p_time = _flatten_field(pvs, "time")[p_idx]
+        dz_flight = t_z - p_z
+        speed_factor = np.sqrt(1.0 + t_tx**2 + t_ty**2)
+        flight_time = (dz_flight * speed_factor) / c_light
+        dt_flat = t_time - flight_time - p_time
+        result["dt"] = _unflatten_3d(dt_flat, track_counts, pv_counts)
 
-def flight_corrected_dt(tracks, pvs):
-    """Flight-corrected time residual dt = t_track - t_flight - t_pv.
-
-    Returns shape (events, tracks, pvs).
-    """
-    import awkward as ak
-
-    def _bc(t_arr, pv_arr):
-        return ak.unzip(ak.cartesian([t_arr, pv_arr], axis=1, nested=True))
-
-    t_z, pv_z = _bc(tracks["z"], pvs["z"])
-    t_tx, _ = _bc(tracks["tx"], pvs["z"])
-    t_ty, _ = _bc(tracks["ty"], pvs["z"])
-    t_time, pv_time = _bc(tracks["time"], pvs["time"])
-
-    dz = t_z - pv_z
-    speed_factor = (1.0 + t_tx**2 + t_ty**2) ** 0.5
-    flight_time = (dz * speed_factor) / C_LIGHT_MM_PER_NS
-
-    return t_time - flight_time - pv_time
+    return result
 
 
 def tracks_pv_association(tracks, pvs, max_dt_corrected=0.05):
-    """Select best PV per track (min IP) and add best_pv_* fields.
+    """Select best PV per track (min IP) and add best_pv_* fields."""
+    pairs = compute_track_pv_pairs(tracks, pvs)
+    ip_all = pairs["ip"]
+    ip_chi2_all = pairs["ip_chi2"]
 
-    PVs are optionally pre-filtered by flight-corrected dt; falls back
-    to all PVs if none pass. Adds min_ip, min_ip_chi2, best_pv_{x,y,z,...}.
-    """
-    import awkward as ak
-    import numpy as np
-
-    # Vectorized IP and IP chi2: shape (events, tracks, pvs)
-    ip_all, ip_chi2_all = ip_to_pvs(tracks, pvs)
-
-    if max_dt_corrected is not None:
-        dt_all = flight_corrected_dt(tracks, pvs)  # (events, tracks, pvs)
+    if max_dt_corrected is not None and "dt" in pairs:
+        dt_all = pairs["dt"]
         time_ok = np.abs(dt_all) < max_dt_corrected
-        any_pass = ak.any(time_ok, axis=-1)  # (events, tracks)
-
-        # Where time cut passes for at least one PV, mask out failing PVs;
-        # otherwise fall back to all PVs (no masking).
+        any_pass = ak.any(time_ok, axis=-1)
         ip_for_min = ak.where(
             any_pass,
-            ak.where(time_ok, ip_all, np.inf),
+            ak.where(time_ok, ip_all, np.inf),  # Set ip = inf for bad pvs
             ip_all,
         )
     else:
         ip_for_min = ip_all
 
-    best_pv = ak.argmin(ip_for_min, axis=-1, keepdims=True)  # (events, tracks, 1)
+    best_pv = ak.argmin(ip_for_min, axis=-1, keepdims=True)
 
     # Handle empty tracks or empty PVs — argmin returns None
-    has_pvs = ak.num(ip_all, axis=-1) > 0  # (events, tracks)
-    zero = has_pvs * 0.0  # (events, tracks) of zeros
+    has_pvs = ak.num(ip_all, axis=-1) > 0
+    zero = has_pvs * 0.0
 
     def _pick(pv_field):
-        """Select best-PV value for each track, 0.0 where no PVs."""
         return ak.where(has_pvs, ak.flatten(pv_field[best_pv], axis=-1), zero)
 
     tracks["min_ip"] = _pick(ip_all)
     tracks["min_ip_chi2"] = _pick(ip_chi2_all)
 
     # Best PV index (events, tracks) — -1 where no PVs
-    bp = ak.flatten(best_pv, axis=-1)  # (events, tracks), may contain None
+    bp = ak.flatten(best_pv, axis=-1)
     bp_safe = ak.fill_none(bp, 0)
     tracks["best_pv_index"] = ak.where(has_pvs, bp_safe, -1)
 
-    # Build flat index for picking best-PV fields from (events, pvs) arrays.
-    bp_flat = ak.to_numpy(ak.flatten(bp_safe))
-    track_counts = ak.to_numpy(ak.num(bp_safe))
-    pv_counts = ak.to_numpy(ak.num(pvs["x"]))
-    pv_offsets = np.zeros(len(pv_counts) + 1, dtype=np.int64)
-    np.cumsum(pv_counts, out=pv_offsets[1:])
-    evt_per_track = np.repeat(np.arange(len(track_counts)), track_counts)
-    global_idx = pv_offsets[evt_per_track] + bp_flat
-
-    pv_fields = [
-        "x",
-        "y",
-        "z",
-        "time",
-        "sigma_time",
-        "cov_0_0",
-        "cov_1_0",
-        "cov_1_1",
-        "cov_2_0",
-        "cov_2_1",
-        "cov_2_2",
-        "cov_3_3",
-    ]
-    for field in pv_fields:
-        pv_flat = ak.to_numpy(ak.flatten(pvs[field]))
-        picked_flat = pv_flat[global_idx]
-        picked = ak.unflatten(picked_flat, track_counts)
-        tracks[f"best_pv_{field}"] = ak.where(has_pvs, picked, zero)
+    _write_best_pv_fields(
+        tracks,
+        pvs,
+        lambda f: ak.where(has_pvs, gather_jagged(pvs[f], bp_safe), zero),
+    )
 
     # Store PV container reference for offline lookups
     tracks["_pvs"] = pvs
@@ -219,152 +206,48 @@ def tracks_pv_association(tracks, pvs, max_dt_corrected=0.05):
     return tracks
 
 
-# ---------------------------------------------------------------------------
-# Combination utilities
-# ---------------------------------------------------------------------------
+def vertex_fit_3d(comb):
+    """Spatial vertex fit from daughter tracks, writes vertex fields into *comb*."""
+    _COV_KEYS = (
+        "cov_0_0",
+        "cov_1_0",
+        "cov_1_1",
+        "cov_2_0",
+        "cov_2_1",
+        "cov_2_2",
+        "cov_3_0",
+        "cov_3_1",
+        "cov_3_2",
+        "cov_3_3",
+    )
+    pools = comb["_daughter_pools"]
+    missing = [ck for ck in _COV_KEYS if ck not in pools[0]]
+    if missing:
+        raise ValueError(
+            f"vertex_fit_3d requires track covariance fields; missing: {missing}"
+        )
 
-
-def make_combinations(track_pools):
-    """Build n-body combinations from track pools.
-
-    Same-object pools use ak.combinations (no self-pairing);
-    distinct pools use ak.cartesian (full cross-product).
-    Returns a tuple of n_body daughter containers.
-    """
-    import awkward as ak
-
-    n_body = len(track_pools)
-
-    # Group pool positions by identity
-    groups: dict[int, list[int]] = {}
-    pool_map: dict[int, dict] = {}
-    for i, pool in enumerate(track_pools):
-        pid = id(pool)
-        groups.setdefault(pid, []).append(i)
-        pool_map[pid] = pool
-
-    ordered_group_ids = list(groups.keys())
-
-    if len(ordered_group_ids) == 1:
-        # Fast path: all daughters from the same pool → ak.combinations
-        pool = pool_map[ordered_group_ids[0]]
-        idx = ak.local_index(pool["x"], axis=1)
-        combo_idx = ak.combinations(idx, n_body, axis=1)
-        daughter_indices = ak.unzip(combo_idx)
-        result = []
-        for daughter_idx in daughter_indices:
-            daughter = {}
-            for field, arr in pool.items():
-                try:
-                    daughter[field] = arr[daughter_idx]
-                except (TypeError, IndexError):
-                    pass  # skip non-array metadata (_daughter_pools, etc.)
-            result.append(daughter)
-        return tuple(result)
-
-    # General case: combinations within same-pool groups, cartesian across groups
-    group_arrays = []
-    for gid in ordered_group_ids:
-        pool = pool_map[gid]
-        positions = groups[gid]
-        k = len(positions)
-        idx = ak.local_index(pool["x"], axis=1)
-        if k == 1:
-            group_arrays.append(idx)
-        else:
-            group_arrays.append(ak.combinations(idx, k, axis=1))
-
-    # Cartesian product across groups
-    cart = ak.cartesian(group_arrays, axis=1)
-
-    # Unpack into per-position indices
-    # cart fields are "0", "1", ... for each group
-    n_groups = len(ordered_group_ids)
-    daughter_indices_list: list[tuple[int, ...]] = [None] * n_body  # type: ignore[list-item]
-
-    if n_groups == 1:
-        # Already handled above, but just in case
-        items = ak.unzip(cart)
-        for pos, item in zip(groups[ordered_group_ids[0]], items):
-            daughter_indices_list[pos] = item
-    else:
-        for gi, gid in enumerate(ordered_group_ids):
-            positions = groups[gid]
-            group_part = cart[str(gi)]
-            if len(positions) == 1:
-                daughter_indices_list[positions[0]] = group_part
-            else:
-                sub_items = ak.unzip(group_part)
-                for pos, sub in zip(positions, sub_items):
-                    daughter_indices_list[pos] = sub
-
-    # Build daughter Containers
-    result = []
-    for i, daughter_idx in enumerate(daughter_indices_list):
-        pool = track_pools[i]
-        daughter = {}
-        for field, arr in pool.items():
-            try:
-                daughter[field] = arr[daughter_idx]
-            except (TypeError, IndexError):
-                pass  # skip non-array metadata (_daughter_pools, etc.)
-        result.append(daughter)
-    return tuple(result)
-
-
-def flatten_daughters(daughters, fields=None):
-    """Flatten jagged daughters to (flat_daughters, counts).
-
-    Doubly-jagged fields (e.g. mc_ancestor_pids) are skipped.
-    """
-    import awkward as ak
-    import numpy as np
-
-    ref = next(iter(daughters[0].values()))
-    counts = ak.to_numpy(ak.num(ref, axis=1))
-
-    if fields is None:
-        fields = list(daughters[0].keys())
-
-    flat_daughters = []
-    for daughter in daughters:
-        flat_daughter = {}
-        for field in fields:
-            arr = daughter[field]
-            flat = ak.flatten(arr, axis=1)
-            try:
-                flat_daughter[field] = ak.to_numpy(flat)
-            except ValueError:
-                # Skip doubly-jagged fields (e.g. mc_ancestor_pids)
-                continue
-        flat_daughters.append(flat_daughter)
-    return tuple(flat_daughters), counts
-
-
-def unflatten_array(flat_arr, counts):
-    """Unflatten ``(N,)`` array back to ``(events, var_combos)`` jagged."""
-    import awkward as ak
-
-    return ak.unflatten(flat_arr, counts, axis=0)
-
-
-# ---------------------------------------------------------------------------
-# Vertex fit
-# ---------------------------------------------------------------------------
-
-
-def vertex_fit_xyz(x, y, z, tx, ty, cov_fields):
-    """Batch least-squares vertex fit in (x, y, z).
-
-    Returns (vertex_xyz, spatial_chi2, cov_xyz).
-    """
-    import numpy as np
+    x = gather_daughters_stack(comb, "x")
+    y = gather_daughters_stack(comb, "y")
+    z = gather_daughters_stack(comb, "z")
+    tx = gather_daughters_stack(comb, "tx")
+    ty = gather_daughters_stack(comb, "ty")
+    c00 = gather_daughters_stack(comb, "cov_0_0")
+    c10 = gather_daughters_stack(comb, "cov_1_0")
+    c11 = gather_daughters_stack(comb, "cov_1_1")
+    c20 = gather_daughters_stack(comb, "cov_2_0")
+    c21 = gather_daughters_stack(comb, "cov_2_1")
+    c22 = gather_daughters_stack(comb, "cov_2_2")
+    c30 = gather_daughters_stack(comb, "cov_3_0")
+    c31 = gather_daughters_stack(comb, "cov_3_1")
+    c32 = gather_daughters_stack(comb, "cov_3_2")
+    c33 = gather_daughters_stack(comb, "cov_3_3")
 
     N, n = x.shape
 
     # --- Normal equations for [x_v, y_v, z_v] ---
     # Design-matrix rows per track: [1, 0, -tx_i] and [0, 1, -ty_i].
-    # ATA and ATb are assembled from these, then solved with np.linalg.
+    # ATA and ATb are assembled from these, then solved analytically.
     stx = np.sum(tx, axis=1)
     sty = np.sum(ty, axis=1)
     st2 = np.sum(tx**2 + ty**2, axis=1)
@@ -376,41 +259,21 @@ def vertex_fit_xyz(x, y, z, tx, ty, cov_fields):
     b1 = np.sum(ry, axis=1)
     b2 = np.sum(-tx * rx - ty * ry, axis=1)
 
-    # Build (N, 3, 3) ATA and (N, 3) ATb
-    ATA = np.zeros((N, 3, 3))
-    ATA[:, 0, 0] = n
-    ATA[:, 1, 1] = n
-    ATA[:, 0, 2] = -stx
-    ATA[:, 2, 0] = -stx
-    ATA[:, 1, 2] = -sty
-    ATA[:, 2, 1] = -sty
-    ATA[:, 2, 2] = st2
-    ATb = np.stack([b0, b1, b2], axis=1)  # (N, 3)
+    # ATA is symmetric: [[n, 0, -stx], [0, n, -sty], [-stx, -sty, st2]]
+    a00 = np.full(N, float(n))
+    a01 = np.zeros(N)
+    a02 = -stx
+    a11 = np.full(N, float(n))
+    a12 = -sty
+    a22 = st2
 
-    # Solve; singular systems get fallback values.
-    # ATb must be (N, 3, 1) so np.linalg.solve treats the leading axis as
-    # batch — otherwise (N, 3) is ambiguous when N == 3.
-    try:
-        vertex_xyz = np.linalg.solve(ATA, ATb[:, :, np.newaxis])[:, :, 0]
-    except np.linalg.LinAlgError:
-        # Batch fallback: solve one-by-one, skip singular
-        vertex_xyz = np.column_stack(
-            [
-                np.mean(x, axis=1),
-                np.mean(y, axis=1),
-                np.mean(z, axis=1),
-            ]
-        )
-        for i in range(N):
-            try:
-                vertex_xyz[i] = np.linalg.solve(ATA[i], ATb[i])
-            except np.linalg.LinAlgError:
-                pass  # keeps mean fallback
+    # Solve ATA @ v = ATb
+    vx, vy, vz = solve_3x3_sym(a00, a01, a02, a11, a12, a22, b0, b1, b2)
 
     # --- Spatial chi2 and weighted vertex covariance ---
-    z_v = vertex_xyz[:, 2:3]  # (N, 1)
-    x_v = vertex_xyz[:, 0:1]
-    y_v = vertex_xyz[:, 1:2]
+    z_v = vz[:, np.newaxis]
+    x_v = vx[:, np.newaxis]
+    y_v = vy[:, np.newaxis]
 
     dz = z_v - z  # (N, n)
     x_ext = x + tx * dz
@@ -418,95 +281,46 @@ def vertex_fit_xyz(x, y, z, tx, ty, cov_fields):
     dx = x_ext - x_v
     dy = y_ext - y_v
 
-    have_cov = all(
-        k in cov_fields
-        for k in (
-            "cov_0_0",
-            "cov_1_1",
-            "cov_2_0",
-            "cov_2_2",
-            "cov_3_1",
-            "cov_3_3",
-            "cov_1_0",
-            "cov_3_0",
-            "cov_2_1",
-            "cov_3_2",
-        )
+    # Propagate track 2x2 (x,y) covariance to vertex z
+    var_x = c00 + 2.0 * dz * c20 + dz**2 * c22
+    var_y = c11 + 2.0 * dz * c31 + dz**2 * c33
+    cov_xy = c10 + dz * c30 + dz * c21 + dz**2 * c32
+    chi2_leg = mahalanobis_2x2(dx, dy, var_x, cov_xy, var_y)
+    spatial_chi2 = np.sum(chi2_leg, axis=1)
+
+    # Weighted vertex covariance: cov = inv(sum_i H_i^T W_i H_i)
+    # H_i = [[1,0,-tx_i],[0,1,-ty_i]], W_i = inv(V_i)
+    det = var_x * var_y - cov_xy**2
+    safe_det = np.where(np.abs(det) > 1e-30, det, 1.0)
+    w00 = var_y / safe_det  # (N, n)
+    w11 = var_x / safe_det
+    w01 = -cov_xy / safe_det
+
+    s00 = np.sum(w00, axis=1)
+    s01 = np.sum(w01, axis=1)
+    s11 = np.sum(w11, axis=1)
+    s02 = np.sum(-tx * w00 - ty * w01, axis=1)
+    s12 = np.sum(-tx * w01 - ty * w11, axis=1)
+    s22 = np.sum(tx**2 * w00 + 2 * tx * ty * w01 + ty**2 * w11, axis=1)
+
+    vc00, vc01, vc02, vc11, vc12, vc22 = inv_3x3_sym(
+        s00, s01, s02, s11, s12, s22
     )
-    if have_cov:
-        # Propagate track 2x2 (x,y) covariance to vertex z
-        var_x = (
-            cov_fields["cov_0_0"]
-            + 2.0 * dz * cov_fields["cov_2_0"]
-            + dz**2 * cov_fields["cov_2_2"]
-        )
-        var_y = (
-            cov_fields["cov_1_1"]
-            + 2.0 * dz * cov_fields["cov_3_1"]
-            + dz**2 * cov_fields["cov_3_3"]
-        )
-        cov_xy = (
-            cov_fields["cov_1_0"]
-            + dz * cov_fields["cov_3_0"]
-            + dz * cov_fields["cov_2_1"]
-            + dz**2 * cov_fields["cov_3_2"]
-        )
-        chi2_leg = _mahalanobis_2x2(dx, dy, var_x, cov_xy, var_y)
-        spatial_chi2 = np.sum(chi2_leg, axis=1)
 
-        # Weighted vertex covariance: cov = inv(sum_i H_i^T W_i H_i)
-        # H_i = [[1,0,-tx_i],[0,1,-ty_i]], W_i = inv(V_i)
-        ATA_w = np.zeros((N, 3, 3))
-        for k in range(n):
-            det = var_x[:, k] * var_y[:, k] - cov_xy[:, k] ** 2
-            safe_det = np.where(np.abs(det) > 1e-30, det, 1.0)
-            w00 = var_y[:, k] / safe_det
-            w11 = var_x[:, k] / safe_det
-            w01 = -cov_xy[:, k] / safe_det
-            tx_k = tx[:, k]
-            ty_k = ty[:, k]
-            ATA_w[:, 0, 0] += w00
-            ATA_w[:, 0, 1] += w01
-            ATA_w[:, 0, 2] += -tx_k * w00 - ty_k * w01
-            ATA_w[:, 1, 0] += w01
-            ATA_w[:, 1, 1] += w11
-            ATA_w[:, 1, 2] += -tx_k * w01 - ty_k * w11
-            ATA_w[:, 2, 0] += -tx_k * w00 - ty_k * w01
-            ATA_w[:, 2, 1] += -tx_k * w01 - ty_k * w11
-            ATA_w[:, 2, 2] += tx_k**2 * w00 + 2 * tx_k * ty_k * w01 + ty_k**2 * w11
-
-        try:
-            cov_xyz_out = np.linalg.inv(ATA_w)
-        except np.linalg.LinAlgError:
-            cov_xyz_out = np.tile(np.eye(3) * 1e6, (N, 1, 1))
-            for i in range(N):
-                try:
-                    cov_xyz_out[i] = np.linalg.inv(ATA_w[i])
-                except np.linalg.LinAlgError:
-                    pass
-    else:
-        spatial_chi2 = np.sum(dx**2 + dy**2, axis=1)
-        try:
-            cov_xyz_out = np.linalg.inv(ATA)
-        except np.linalg.LinAlgError:
-            cov_xyz_out = np.tile(np.eye(3) * 1e6, (N, 1, 1))
-            for i in range(N):
-                try:
-                    cov_xyz_out[i] = np.linalg.inv(ATA[i])
-                except np.linalg.LinAlgError:
-                    pass
-
-    return vertex_xyz, spatial_chi2, cov_xyz_out
-
-
-# ---------------------------------------------------------------------------
-# DOCA
-# ---------------------------------------------------------------------------
+    comb["vertex_x"] = vx
+    comb["vertex_y"] = vy
+    comb["vertex_z"] = vz
+    comb["vertex_chi2"] = spatial_chi2
+    comb["vertex_cov_0_0"] = vc00
+    comb["vertex_cov_1_0"] = vc01
+    comb["vertex_cov_1_1"] = vc11
+    comb["vertex_cov_2_0"] = vc02
+    comb["vertex_cov_2_1"] = vc12
+    comb["vertex_cov_2_2"] = vc22
 
 
 def doca_2body(x, y, z, tx, ty):
     """Batch distance of closest approach between two straight tracks."""
-    import numpy as np
 
     norm0 = (1.0 + tx[:, 0] ** 2 + ty[:, 0] ** 2) ** 0.5
     norm1 = (1.0 + tx[:, 1] ** 2 + ty[:, 1] ** 2) ** 0.5
@@ -524,20 +338,9 @@ def doca_2body(x, y, z, tx, ty):
     d = ux0 * w0x + uy0 * w0y + uz0 * w0z
     e = ux1 * w0x + uy1 * w0y + uz1 * w0z
 
-    # Solve 2x2 system [[a, -b], [-b, c]] @ [s, t] = [-d, e] via np.linalg
+    # Solve 2x2 system [[a, -b], [-b, c]] @ [s, t] = [-d, e]
     # (derived from minimising |w + s*u0 - t*u1|^2)
-    N = len(a)
-    A = np.stack(
-        [np.stack([a, -b], axis=-1), np.stack([-b, c], axis=-1)], axis=-2
-    )  # (N, 2, 2)
-    rhs = np.stack([-d, e], axis=-1)[:, :, np.newaxis]  # (N, 2, 1)
-    det = np.linalg.det(A)
-    parallel = np.abs(det) < 1e-12
-    st = np.zeros((N, 2))
-    good = ~parallel
-    if np.any(good):
-        st[good] = np.linalg.solve(A[good], rhs[good])[:, :, 0]
-    s, t = st[:, 0], st[:, 1]
+    s, t, parallel = solve_2x2(a, -b, -b, c, -d, e)
 
     diff_x = w0x + s * ux0 - t * ux1
     diff_y = w0y + s * uy0 - t * uy1
@@ -554,7 +357,6 @@ def doca_2body(x, y, z, tx, ty):
 
 def doca_nbody(x, y, z, tx, ty, n_body):
     """Pairwise DOCAs for all pairs in an n-body combination."""
-    import numpy as np
 
     result = {}
     for i in range(n_body):
@@ -570,14 +372,167 @@ def doca_nbody(x, y, z, tx, ty, n_body):
     return result
 
 
-# ---------------------------------------------------------------------------
-# Time fit
-# ---------------------------------------------------------------------------
+def compute_doca(comb):
+    """Compute pairwise DOCAs and write doca{i}{j}, max_doca, min_doca into comb."""
+    n_body = n_daughters(comb)
+
+    x = gather_daughters_stack(comb, "x")
+    y = gather_daughters_stack(comb, "y")
+    z = gather_daughters_stack(comb, "z")
+    tx = gather_daughters_stack(comb, "tx")
+    ty = gather_daughters_stack(comb, "ty")
+
+    if n_body == 2:
+        doca_vals = {"doca12": doca_2body(x, y, z, tx, ty)}
+    else:
+        doca_vals = doca_nbody(x, y, z, tx, ty, n_body)
+
+    for dk, dv in doca_vals.items():
+        comb[dk] = dv
+
+    all_doca = np.column_stack(list(doca_vals.values()))
+    comb["max_doca"] = np.max(all_doca, axis=1)
+    comb["min_doca"] = np.min(all_doca, axis=1)
 
 
-def _propagate_time_to_vertex(time, sigma_time, z, tx, ty, p, masses, vertex_z):
+def compute_composite_covariance(comb):
+    """Propagate daughter covariances to composite 5x5 track-state covariance."""
+    n_body = n_daughters(comb)
+    spx, spy, spz = comb["px"], comb["py"], comb["pz"]
+    charge = comb["charge"]
+    N = len(spx)
+
+    cov_sub_keys = [
+        ("cov_2_2", "cov_3_2", "cov_4_2"),
+        ("cov_3_2", "cov_3_3", "cov_4_3"),
+        ("cov_4_2", "cov_4_3", "cov_4_4"),
+    ]
+
+    # --- Step 1: Sum daughter momentum covariances ---
+    # For each daughter, transform cov(tx, ty, qop) → cov(px, py, pz)
+    # using Jacobian J, then sum across daughters.
+    mom_cov = np.zeros((N, 3, 3))
+
+    for k in range(n_body):
+        tx_k = get_daughter(comb, k, "tx")
+        ty_k = get_daughter(comb, k, "ty")
+        p_k = get_daughter(comb, k, "p")
+        qop_k = get_daughter(comb, k, "qop")
+
+        s = np.sqrt(1.0 + tx_k**2 + ty_k**2)
+        s3 = s**3
+        ps3 = p_k / s3
+        px_k = p_k * tx_k / s
+        py_k = p_k * ty_k / s
+        pz_k = p_k / s
+        safe_qop = np.where(np.abs(qop_k) > 1e-30, qop_k, 1e-30)
+
+        # Build 3x3 sub-covariance (tx, ty, qop)
+        C = np.zeros((N, 3, 3))
+        for i in range(3):
+            for j in range(i + 1):
+                val = get_daughter(comb, k, cov_sub_keys[i][j])
+                C[:, i, j] = val
+                C[:, j, i] = val
+
+        # Jacobian d(px,py,pz)/d(tx,ty,qop)
+        J = np.zeros((N, 3, 3))
+        J[:, 0, 0] = ps3 * (1.0 + ty_k**2)  # dpx/dtx
+        J[:, 0, 1] = -ps3 * tx_k * ty_k  # dpx/dty
+        J[:, 0, 2] = -px_k / safe_qop  # dpx/dqop
+        J[:, 1, 0] = -ps3 * tx_k * ty_k  # dpy/dtx
+        J[:, 1, 1] = ps3 * (1.0 + tx_k**2)  # dpy/dty
+        J[:, 1, 2] = -py_k / safe_qop  # dpy/dqop
+        J[:, 2, 0] = -ps3 * tx_k  # dpz/dtx
+        J[:, 2, 1] = -ps3 * ty_k  # dpz/dty
+        J[:, 2, 2] = -pz_k / safe_qop  # dpz/dqop
+
+        # mom_cov += J @ C @ J.T
+        JC = np.einsum("nij,njk->nik", J, C)
+        mom_cov += np.einsum("nij,nkj->nik", JC, J)
+
+    # --- Step 2: Transform sum cov(px,py,pz) → cov(tx,ty,qop) for composite ---
+    safe_pz = np.where(np.abs(spz) > 1e-12, spz, 1e-12)
+    p_total = np.sqrt(spx**2 + spy**2 + spz**2)
+    safe_p3 = np.where(p_total > 1e-12, p_total**3, 1e-36)
+
+    K = np.zeros((N, 3, 3))
+    K[:, 0, 0] = 1.0 / safe_pz  # dtx/dpx
+    K[:, 0, 2] = -spx / safe_pz**2  # dtx/dpz
+    K[:, 1, 1] = 1.0 / safe_pz  # dty/dpy
+    K[:, 1, 2] = -spy / safe_pz**2  # dty/dpz
+    K[:, 2, 0] = -charge * spx / safe_p3  # dqop/dpx
+    K[:, 2, 1] = -charge * spy / safe_p3  # dqop/dpy
+    K[:, 2, 2] = -charge * spz / safe_p3  # dqop/dpz
+
+    KC = np.einsum("nij,njk->nik", K, mom_cov)
+    slope_cov = np.einsum("nij,nkj->nik", KC, K)  # K @ mom_cov @ K.T
+
+    # --- Step 3: Assemble 5x5 covariance ---
+    # Position block from vertex_cov
+    comb["cov_0_0"] = comb["vertex_cov_0_0"]
+    comb["cov_1_0"] = comb["vertex_cov_1_0"]
+    comb["cov_1_1"] = comb["vertex_cov_1_1"]
+    # Position-slope cross terms (simplified to zero)
+    zero = np.zeros(N)
+    comb["cov_2_0"] = zero
+    comb["cov_2_1"] = zero
+    comb["cov_3_0"] = zero
+    comb["cov_3_1"] = zero
+    comb["cov_4_0"] = zero
+    comb["cov_4_1"] = zero
+    # Slope/qop block from propagation
+    comb["cov_2_2"] = slope_cov[:, 0, 0]  # var(tx)
+    comb["cov_3_2"] = slope_cov[:, 1, 0]  # cov(ty, tx)
+    comb["cov_3_3"] = slope_cov[:, 1, 1]  # var(ty)
+    comb["cov_4_2"] = slope_cov[:, 2, 0]  # cov(qop, tx)
+    comb["cov_4_3"] = slope_cov[:, 2, 1]  # cov(qop, ty)
+    comb["cov_4_4"] = slope_cov[:, 2, 2]  # var(qop)
+
+
+def compute_prefit_kinematics(comb):
+    """Compute mass, pt, charge from daughter 4-vectors (no vertex fit needed)."""
+    p_arr = gather_daughters_stack(comb, "p")
+    tx_arr = gather_daughters_stack(comb, "tx")
+    ty_arr = gather_daughters_stack(comb, "ty")
+    mass_arr = gather_daughters_stack(comb, "mass")
+
+    spx, spy, spz, se = lorentz_sum(p_arr, tx_arr, ty_arr, mass_arr)
+    comb["px"] = spx
+    comb["py"] = spy
+    comb["pz"] = spz
+    comb["energy"] = se
+    comb["mass"] = invariant_mass(spx, spy, spz, se)
+    pt_v, eta_v = pt_eta(spx, spy, spz)
+    comb["pt"] = pt_v
+    comb["eta"] = eta_v
+
+    charge_arr = gather_daughters_stack(comb, "charge")
+    comb["charge"] = np.sum(charge_arr, axis=1)
+
+
+def consolidate_composite(comb):
+    """Set track-compatible fields from vertex position and pre-computed momenta."""
+    if "px" not in comb:
+        compute_prefit_kinematics(comb)
+
+    spx, spy, spz = comb["px"], comb["py"], comb["pz"]
+
+    comb["x"] = comb["vertex_x"]
+    comb["y"] = comb["vertex_y"]
+    comb["z"] = comb["vertex_z"]
+    safe_pz = np.where(np.abs(spz) > 1e-12, spz, 1e-12)
+    comb["tx"] = spx / safe_pz
+    comb["ty"] = spy / safe_pz
+    comb["p"] = np.sqrt(spx**2 + spy**2 + spz**2)
+    comb["qop"] = comb["charge"] / comb["p"]
+    if "vertex_time" in comb:
+        comb["time"] = comb["vertex_time"]
+        comb["sigma_time"] = comb["vertex_sigma_time"]
+
+
+def _propagate_time_to_vertex(time, z, tx, ty, p, masses, vertex_z):
     """Propagate track times to vertex z, correcting for mass-dependent speed."""
-    import numpy as np
 
     if masses.ndim == 1:
         masses = np.broadcast_to(masses[np.newaxis, :], time.shape)
@@ -592,31 +547,15 @@ def _propagate_time_to_vertex(time, sigma_time, z, tx, ty, p, masses, vertex_z):
     beta = np.where(energy > 0, p_safe / energy, 0.0)
     beta = np.clip(beta, 0.0, 1.0)
 
-    denom = beta * C_LIGHT_MM_PER_NS
+    denom = beta * c_light
     valid = denom > 0
     t_prop = np.where(valid, time + path / np.where(valid, denom, 1.0), time)
 
     return t_prop
 
 
-def vertex_time_fit(time, sigma_time, z, tx, ty, p, masses, vertex_z):
-    """Weighted average of propagated track times at the vertex.
-
-    Returns (vertex_time, sigma_t, time_chi2).
-    """
-    import numpy as np
-
-    t_prop = _propagate_time_to_vertex(
-        time,
-        sigma_time,
-        z,
-        tx,
-        ty,
-        p,
-        masses,
-        vertex_z,
-    )
-
+def _vertex_time_fit(t_prop, sigma_time):
+    """Weighted average of propagated track times; returns (vertex_time, sigma_t, time_chi2)."""
     valid_sigma = sigma_time > 0
     w = np.where(valid_sigma, 1.0 / (sigma_time**2), 0.0)
 
@@ -637,24 +576,11 @@ def vertex_time_fit(time, sigma_time, z, tx, ty, p, masses, vertex_z):
     return t_v, sigma_t, time_chi2
 
 
-def pairwise_time_chi2(time, sigma_time, z, tx, ty, p, masses, vertex_z):
+def _pairwise_time_chi2(t_prop, sigma_time):
     """Mean pairwise time chi2 over all unique daughter pairs."""
-    import numpy as np
-
-    N, n = time.shape
+    N, n = t_prop.shape
     if n <= 1:
         return np.zeros(N)
-
-    t_prop = _propagate_time_to_vertex(
-        time,
-        sigma_time,
-        z,
-        tx,
-        ty,
-        p,
-        masses,
-        vertex_z,
-    )
 
     chi2 = np.zeros(N)
     n_pairs = np.zeros(N)
@@ -669,14 +595,35 @@ def pairwise_time_chi2(time, sigma_time, z, tx, ty, p, masses, vertex_z):
     return np.where(n_pairs > 0, chi2 / n_pairs, 0.0)
 
 
-# ---------------------------------------------------------------------------
-# Kinematics
-# ---------------------------------------------------------------------------
+def vertex_fit_3d_plus_time(comb):
+    """Spatial vertex fit + time fit if daughters have time/sigma_time."""
+    vertex_fit_3d(comb)
+
+    pools = comb["_daughter_pools"]
+    has_time = all("time" in p and "sigma_time" in p for p in pools)
+
+    if has_time:
+        time_arr = gather_daughters_stack(comb, "time")
+        sigma_t = gather_daughters_stack(comb, "sigma_time")
+
+        t_prop = _propagate_time_to_vertex(
+            time_arr,
+            gather_daughters_stack(comb, "z"),
+            gather_daughters_stack(comb, "tx"),
+            gather_daughters_stack(comb, "ty"),
+            gather_daughters_stack(comb, "p"),
+            gather_daughters_stack(comb, "mass"),
+            comb["vertex_z"],
+        )
+        vt, stt, tchi2 = _vertex_time_fit(t_prop, sigma_t)
+        comb["vertex_time"] = vt
+        comb["vertex_sigma_time"] = stt
+        comb["vertex_time_chi2"] = tchi2
+        comb["pair_time_chi2"] = _pairwise_time_chi2(t_prop, sigma_t)
 
 
 def lorentz_sum(p, tx, ty, masses):
     """Sum Lorentz 4-vectors of daughters. Returns (px, py, pz, E)."""
-    import numpy as np
 
     if masses.ndim == 1:
         masses = np.broadcast_to(masses[np.newaxis, :], p.shape)
@@ -691,12 +638,16 @@ def lorentz_sum(p, tx, ty, masses):
     pz = p * dz
     e = (p**2 + masses**2) ** 0.5
 
-    return np.sum(px, axis=1), np.sum(py, axis=1), np.sum(pz, axis=1), np.sum(e, axis=1)
+    return (
+        np.sum(px, axis=1),
+        np.sum(py, axis=1),
+        np.sum(pz, axis=1),
+        np.sum(e, axis=1),
+    )
 
 
 def invariant_mass(sum_px, sum_py, sum_pz, sum_e):
     """Invariant mass from summed 4-momentum."""
-    import numpy as np
 
     m2 = sum_e**2 - sum_px**2 - sum_py**2 - sum_pz**2
     abs_m2 = np.abs(m2)
@@ -706,7 +657,6 @@ def invariant_mass(sum_px, sum_py, sum_pz, sum_e):
 
 def pt_eta(sum_px, sum_py, sum_pz):
     """Transverse momentum and pseudorapidity from 3-momentum."""
-    import numpy as np
 
     pt = (sum_px**2 + sum_py**2) ** 0.5
     p_tot = (sum_px**2 + sum_py**2 + sum_pz**2) ** 0.5
@@ -722,238 +672,355 @@ def pt_eta(sum_px, sum_py, sum_pz):
     return pt, eta
 
 
-# ---------------------------------------------------------------------------
-# Composite-PV association
-# ---------------------------------------------------------------------------
+def compute_composite_pv_pairs(comb, pvs):
+    """Compute IP, IP chi2, and time quantities for all (composite, PV) pairs."""
+    n_events = len(pvs["x"])
+    cand_counts = np.bincount(comb["event_idx"], minlength=n_events)
+    pv_counts = ak.to_numpy(ak.num(pvs["x"]))
+    has_time = "vertex_time" in comb
 
+    # PV offsets for global indexing
+    pv_offsets = np.zeros(n_events + 1, dtype=np.int64)
+    np.cumsum(pv_counts, out=pv_offsets[1:])
 
-def composite_pv_association(
-    vertex_xyz,
-    vertex_cov,
-    vertex_time,
-    sigma_time,
-    px,
-    py,
-    pz,
-    energy,
-    pvs,
-    counts,
-    max_time_residual=0.05,
-    max_time_chi2=None,
-):
-    """Best-PV association for composites (min IP, optional time filter).
+    evt_per_cand = np.repeat(np.arange(n_events), cand_counts)
 
-    Returns dict of IP, DIRA, fdchi2, flight_eta, mcor, time fields.
-    """
-    import awkward as ak
-    import numpy as np
+    # Flatten PV fields once
+    pv_field_names = ["x", "y", "z", "cov_0_0", "cov_1_0", "cov_1_1"]
+    if has_time:
+        pv_field_names.extend(["time", "sigma_time"])
+    pv_cov3_names = ["cov_2_0", "cov_2_1", "cov_2_2", "cov_3_3"]
+    pv_mc_names = [k for k in ("mc_x", "mc_y", "mc_z", "mc_key") if k in pvs]
 
-    N = len(px)
-    out = {
-        k: np.zeros(N)
-        for k in (
-            "composite_ip",
-            "composite_ip_chi2",
-            "time_residual",
-            "time_chi2",
-            "flight_time",
-            "dira",
-            "best_pv_index",
-            "best_pv_x",
-            "best_pv_y",
-            "best_pv_z",
-            "fdchi2",
-            "flight_eta",
-            "mcor",
-        )
+    pv_flat = {}
+    for k in pv_field_names + pv_cov3_names + pv_mc_names:
+        v = pvs.get(k)
+        if v is not None:
+            pv_flat[k] = _flatten_field(pvs, k)
+        else:
+            pv_flat[k] = np.zeros(int(pv_counts.sum()))
+
+    result = {
+        "cand_counts": cand_counts,
+        "pv_counts": pv_counts,
+        "evt_per_cand": evt_per_cand,
+        "pv_offsets": pv_offsets,
+        "pv_flat": pv_flat,
+        "pv_mc_names": pv_mc_names,
     }
-    if N == 0:
-        return out
 
-    pv_arrays = {
-        k: pvs[k]
-        for k in ("x", "y", "z", "time", "sigma_time", "cov_0_0", "cov_1_0", "cov_1_1")
-    }
-    for k in ("cov_2_0", "cov_2_1", "cov_2_2"):
-        pv_arrays[k] = pvs.get(k)
+    c_idx, p_idx, _, _ = _pair_indices(cand_counts, pv_counts)
+    total_pairs = len(c_idx)
+    inner_counts = np.repeat(pv_counts, cand_counts)
+    result["inner_counts"] = inner_counts
 
-    offset = 0
-    for evt_i, nc in enumerate(counts):
-        nc = int(nc)
-        if nc == 0:
-            continue
-        sl = slice(offset, offset + nc)
-        n_pv = int(ak.num(pvs["x"], axis=1)[evt_i])
-        if n_pv == 0:
-            offset += nc
-            continue
+    if total_pairs == 0:
+        empty = ak.unflatten(np.zeros(0), inner_counts)
+        result["ip"] = empty
+        result["ip_chi2"] = empty
+        if has_time:
+            result["time_residual"] = empty
+            result["time_chi2"] = empty
+            result["flight_time"] = empty
+        return result
 
-        # Candidate arrays for this event
-        vxyz = vertex_xyz[sl]  # (nc, 3)
-        vcov = vertex_cov[sl]  # (nc, 3, 3)
-        vt = vertex_time[sl]
-        vst = sigma_time[sl]
-        cpx = px[sl]
-        cpy = py[sl]
-        cpz = pz[sl]
-        ce = energy[sl]
+    # Vertex position and covariance elements
+    vx = comb["vertex_x"]
+    vy = comb["vertex_y"]
+    vz = comb["vertex_z"]
+    c00 = comb["vertex_cov_0_0"]
+    c01 = comb["vertex_cov_1_0"]
+    c02 = comb["vertex_cov_2_0"]
+    c11 = comb["vertex_cov_1_1"]
+    c12 = comb["vertex_cov_2_1"]
+    c22 = comb["vertex_cov_2_2"]
 
-        # PV arrays
-        _pv = {
-            k: np.asarray(v[evt_i]) if v is not None else np.zeros(n_pv)
-            for k, v in pv_arrays.items()
-        }
+    px, py, pz = comb["px"], comb["py"], comb["pz"]
+    energy = comb["energy"]
 
-        # Unit momentum direction
-        p_mag = np.sqrt(cpx**2 + cpy**2 + cpz**2)
-        sp = np.where(p_mag > 1e-16, p_mag, 1e-16)
-        ux = cpx / sp
-        uy = cpy / sp
-        uz = cpz / sp
-        suz = np.where(np.abs(uz) > 1e-12, uz, 1e-12)
-        txc = ux / suz
-        tyc = uy / suz
+    # Per-candidate direction and speed
+    p_mag = np.sqrt(px**2 + py**2 + pz**2)
+    sp = np.where(p_mag > 1e-16, p_mag, 1e-16)
+    ux, uy, uz = px / sp, py / sp, pz / sp
+    suz = np.where(np.abs(uz) > 1e-12, uz, 1e-12)
+    txc, tyc = ux / suz, uy / suz
 
-        # Beta
-        m2 = ce**2 - cpx**2 - cpy**2 - cpz**2
-        mc = np.sqrt(np.abs(m2))
-        ec = np.sqrt(p_mag**2 + mc**2)
-        beta = np.clip(np.where(ec > 0, p_mag / ec, 0.0), 0.0, 1.0)
-        bc = beta * C_LIGHT_MM_PER_NS
+    # Propagated vertex XY covariance (per candidate)
+    var_x_c = np.maximum(c00 + txc**2 * c22 - 2 * txc * c02, 0.0)
+    var_y_c = np.maximum(c11 + tyc**2 * c22 - 2 * tyc * c12, 0.0)
+    cxy_c = c01 - tyc * c02 - txc * c12 + txc * tyc * c22
 
-        # Broadcast (nc, 1) x (1, np)
-        dz = _pv["z"][np.newaxis, :] - vxyz[:, 2:3]
-        x_at = vxyz[:, 0:1] + txc[:, np.newaxis] * dz
-        y_at = vxyz[:, 1:2] + tyc[:, np.newaxis] * dz
-        dx = x_at - _pv["x"][np.newaxis, :]
-        dy = y_at - _pv["y"][np.newaxis, :]
+    # Expand to pair level
+    vx_p, vy_p, vz_p = vx[c_idx], vy[c_idx], vz[c_idx]
+    txc_p, tyc_p = txc[c_idx], tyc[c_idx]
+    ux_p, uy_p, uz_p = ux[c_idx], uy[c_idx], uz[c_idx]
 
-        # Propagated vertex cov
-        c = vcov
-        var_x = (c[:, 0, 0] + txc**2 * c[:, 2, 2] - 2 * txc * c[:, 0, 2])[:, np.newaxis]
-        var_y = (c[:, 1, 1] + tyc**2 * c[:, 2, 2] - 2 * tyc * c[:, 1, 2])[:, np.newaxis]
-        cxy = (
-            c[:, 0, 1] - tyc * c[:, 0, 2] - txc * c[:, 1, 2] + txc * tyc * c[:, 2, 2]
-        )[:, np.newaxis]
-        var_x = np.maximum(var_x, 0.0)
-        var_y = np.maximum(var_y, 0.0)
+    pvx = pv_flat["x"][p_idx]
+    pvy = pv_flat["y"][p_idx]
+    pvz = pv_flat["z"][p_idx]
 
-        tot_xx = var_x + _pv["cov_0_0"][np.newaxis, :]
-        tot_xy = cxy + _pv["cov_1_0"][np.newaxis, :]
-        tot_yy = var_y + _pv["cov_1_1"][np.newaxis, :]
+    # IP
+    dz = pvz - vz_p
+    dx = vx_p + txc_p * dz - pvx
+    dy = vy_p + tyc_p * dz - pvy
+    ip_flat = np.sqrt(dx**2 + dy**2)
 
-        ip = np.sqrt(dx**2 + dy**2)
-        ip_chi2 = _mahalanobis_2x2(dx, dy, tot_xx, tot_xy, tot_yy)
+    tot_xx = var_x_c[c_idx] + pv_flat["cov_0_0"][p_idx]
+    tot_xy = cxy_c[c_idx] + pv_flat["cov_1_0"][p_idx]
+    tot_yy = var_y_c[c_idx] + pv_flat["cov_1_1"][p_idx]
+    ip_chi2_flat = mahalanobis_2x2(dx, dy, tot_xx, tot_xy, tot_yy)
 
-        # Flight time & time agreement
-        disp_x = vxyz[:, 0:1] - _pv["x"][np.newaxis, :]
-        disp_y = vxyz[:, 1:2] - _pv["y"][np.newaxis, :]
-        disp_z = vxyz[:, 2:3] - _pv["z"][np.newaxis, :]
-        fl = (
-            disp_x * ux[:, np.newaxis]
-            + disp_y * uy[:, np.newaxis]
-            + disp_z * uz[:, np.newaxis]
-        )
-        vbc = bc[:, np.newaxis] > 0
-        sbc = np.where(vbc, bc[:, np.newaxis], 1.0)
-        ft = np.where(vbc, fl / sbc, 0.0)
+    result["ip"] = ak.unflatten(ip_flat, inner_counts)
+    result["ip_chi2"] = ak.unflatten(ip_chi2_flat, inner_counts)
 
-        t_at_pv = vt[:, np.newaxis] - ft
-        t_res = t_at_pv - _pv["time"][np.newaxis, :]
+    # Time residual and chi2 (only when time info exists)
+    if has_time:
+        beta = np.clip(np.where(energy > 0, p_mag / energy, 0.0), 0.0, 1.0)
+        bc_p = (beta * c_light)[c_idx]
+        vbc = bc_p > 0
+        sbc = np.where(vbc, bc_p, 1.0)
 
-        # Sigma flight²
+        disp_x, disp_y, disp_z = vx_p - pvx, vy_p - pvy, vz_p - pvz
+        fl = disp_x * ux_p + disp_y * uy_p + disp_z * uz_p
+        ft_flat = np.where(vbc, fl / sbc, 0.0)
+
+        vt_p = comb["vertex_time"][c_idx]
+        t_res_flat = vt_p - ft_flat - pv_flat["time"][p_idx]
+
+        # Flight sigma²
         dvv = (
-            ux**2 * c[:, 0, 0]
-            + uy**2 * c[:, 1, 1]
-            + uz**2 * c[:, 2, 2]
-            + 2 * ux * uy * c[:, 0, 1]
-            + 2 * ux * uz * c[:, 0, 2]
-            + 2 * uy * uz * c[:, 1, 2]
+            ux**2 * c00
+            + uy**2 * c11
+            + uz**2 * c22
+            + 2 * ux * uy * c01
+            + 2 * ux * uz * c02
+            + 2 * uy * uz * c12
         )
         dvp = (
-            ux[:, np.newaxis] ** 2 * _pv["cov_0_0"][np.newaxis, :]
-            + uy[:, np.newaxis] ** 2 * _pv["cov_1_1"][np.newaxis, :]
-            + uz[:, np.newaxis] ** 2 * _pv["cov_2_2"][np.newaxis, :]
-            + 2 * ux[:, np.newaxis] * uy[:, np.newaxis] * _pv["cov_1_0"][np.newaxis, :]
-            + 2 * ux[:, np.newaxis] * uz[:, np.newaxis] * _pv["cov_2_0"][np.newaxis, :]
-            + 2 * uy[:, np.newaxis] * uz[:, np.newaxis] * _pv["cov_2_1"][np.newaxis, :]
+            ux_p**2 * pv_flat["cov_0_0"][p_idx]
+            + uy_p**2 * pv_flat["cov_1_1"][p_idx]
+            + uz_p**2 * pv_flat["cov_2_2"][p_idx]
+            + 2 * ux_p * uy_p * pv_flat["cov_1_0"][p_idx]
+            + 2 * ux_p * uz_p * pv_flat["cov_2_0"][p_idx]
+            + 2 * uy_p * uz_p * pv_flat["cov_2_1"][p_idx]
         )
-        sf2 = np.where(vbc, np.maximum(dvv[:, np.newaxis] + dvp, 0.0) / sbc**2, 0.0)
+        sf2 = np.where(vbc, np.maximum(dvv[c_idx] + dvp, 0.0) / sbc**2, 0.0)
+        vst_p = comb["sigma_time"][c_idx]
         sig2 = (
-            np.maximum(vst, 0.0)[:, np.newaxis] ** 2
-            + np.maximum(_pv["sigma_time"], 0.0)[np.newaxis, :] ** 2
+            np.maximum(vst_p, 0.0) ** 2
+            + np.maximum(pv_flat["sigma_time"][p_idx], 0.0) ** 2
             + sf2
         )
         ssig2 = np.where(sig2 > 0, sig2, 1.0)
-        t_chi2 = np.where(sig2 > 0, t_res**2 / ssig2, t_res**2)
+        t_chi2_flat = np.where(sig2 > 0, t_res_flat**2 / ssig2, t_res_flat**2)
 
-        # Best PV selection
-        ip_sel = ip.copy()
+        result["time_residual"] = ak.unflatten(t_res_flat, inner_counts)
+        result["time_chi2"] = ak.unflatten(t_chi2_flat, inner_counts)
+        result["flight_time"] = ak.unflatten(ft_flat, inner_counts)
+
+    return result
+
+
+def _composite_flight_vector(comb):
+    """Flight vector from best PV to composite vertex."""
+    fx = comb["vertex_x"] - comb["best_pv_x"]
+    fy = comb["vertex_y"] - comb["best_pv_y"]
+    fz = comb["vertex_z"] - comb["best_pv_z"]
+    return fx, fy, fz
+
+
+def compute_composite_dira(comb):
+    """Compute DIRA (cosine of angle between flight and momentum)."""
+    fx, fy, fz = _composite_flight_vector(comb)
+    px, py, pz = comb["px"], comb["py"], comb["pz"]
+    fm = np.sqrt(fx**2 + fy**2 + fz**2)
+    p_mag = np.sqrt(px**2 + py**2 + pz**2)
+    dd = fm * p_mag
+    sdd = np.where(dd > 1e-16, dd, 1.0)
+    comb["dira"] = np.where(
+        dd > 1e-16, (fx * px + fy * py + fz * pz) / sdd, 0.0
+    )
+
+
+def compute_composite_fdchi2(comb):
+    """Compute flight distance chi2 (3D Mahalanobis)."""
+    fx, fy, fz = _composite_flight_vector(comb)
+    z = 0.0
+    tc00 = comb["vertex_cov_0_0"] + comb.get("best_pv_cov_0_0", z)
+    tc01 = comb["vertex_cov_1_0"] + comb.get("best_pv_cov_1_0", z)
+    tc02 = comb["vertex_cov_2_0"] + comb.get("best_pv_cov_2_0", z)
+    tc11 = comb["vertex_cov_1_1"] + comb.get("best_pv_cov_1_1", z)
+    tc12 = comb["vertex_cov_2_1"] + comb.get("best_pv_cov_2_1", z)
+    tc22 = comb["vertex_cov_2_2"] + comb.get("best_pv_cov_2_2", z)
+    comb["fdchi2"] = mahalanobis_3x3(
+        fx, fy, fz, tc00, tc01, tc02, tc11, tc12, tc22
+    )
+
+
+def compute_composite_flight_eta(comb):
+    """Compute pseudorapidity of flight direction."""
+    fx, fy, fz = _composite_flight_vector(comb)
+    fm = np.sqrt(fx**2 + fy**2 + fz**2)
+    safe_fm = np.where(fm > 1e-16, fm, 1.0)
+    ratio = np.clip(fz / safe_fm, -1 + 1e-7, 1 - 1e-7)
+    comb["flight_eta"] = np.where(fm > 1e-16, np.arctanh(ratio), 0.0)
+
+
+def compute_composite_mcor(comb):
+    """Compute corrected mass."""
+    fx, fy, fz = _composite_flight_vector(comb)
+    px, py, pz = comb["px"], comb["py"], comb["pz"]
+    energy = comb["energy"]
+    fm2 = fx**2 + fy**2 + fz**2
+    pperp2 = (
+        (py * fz - fy * pz) ** 2
+        + (pz * fx - fz * px) ** 2
+        + (px * fy - fx * py) ** 2
+    ) / np.maximum(fm2, 1e-32)
+    m_vis2 = np.maximum(energy**2 - px**2 - py**2 - pz**2, 0.0)
+    comb["mcor"] = np.sqrt(m_vis2 + pperp2) + np.sqrt(pperp2)
+
+
+@configurable
+def composite_pv_association(
+    comb,
+    pvs,
+    max_time_residual=0.05,
+    max_time_chi2=None,
+):
+    """Best-PV association for composites (min IP, optional time filter)."""
+    if len(comb["vertex_x"]) == 0:
+        return
+    pairs = compute_composite_pv_pairs(comb, pvs)
+    if ak.sum(ak.num(pairs["ip"], axis=-1)) == 0:
+        return
+
+    # --- Select best PV per composite ---
+    has_time = "vertex_time" in comb
+    ip_jag = pairs["ip"]
+    evt_per_cand = pairs["evt_per_cand"]
+    pv_offsets = pairs["pv_offsets"]
+
+    has_pvs = ak.num(ip_jag, axis=-1) > 0
+    zero = has_pvs * 0.0
+
+    # Time filter (only when time info exists)
+    ip_sel = ak.copy(ip_jag)
+    if has_time:
+        t_res_jag = pairs["time_residual"]
+        t_chi2_jag = pairs["time_chi2"]
         if max_time_residual is not None:
-            tok = np.abs(t_res) <= max_time_residual
-            ap = np.any(tok, axis=1)
-            ip_sel = np.where(tok, ip_sel, np.inf)
-            ip_sel = np.where(ap[:, np.newaxis], ip_sel, ip)
+            tok = np.abs(t_res_jag) <= max_time_residual
+            any_pass = ak.any(tok, axis=-1)
+            ip_sel = ak.where(tok, ip_sel, np.inf)
+            ip_sel = ak.where(any_pass, ip_sel, ip_jag)
         if max_time_chi2 is not None:
-            tcok = t_chi2 <= max_time_chi2
-            ap2 = np.any(tcok, axis=1)
-            ip_sel = np.where(tcok, ip_sel, np.inf)
-            ip_sel = np.where(ap2[:, np.newaxis], ip_sel, ip)
+            tcok = t_chi2_jag <= max_time_chi2
+            any_pass2 = ak.any(tcok, axis=-1)
+            ip_sel = ak.where(tcok, ip_sel, np.inf)
+            ip_sel = ak.where(any_pass2, ip_sel, ip_jag)
 
-        bp = np.argmin(ip_sel, axis=1)
-        ar = np.arange(nc)
+    best_pv = ak.argmin(ip_sel, axis=-1, keepdims=True)
 
-        out["composite_ip"][sl] = ip[ar, bp]
-        out["composite_ip_chi2"][sl] = ip_chi2[ar, bp]
-        out["time_residual"][sl] = t_res[ar, bp]
-        out["time_chi2"][sl] = t_chi2[ar, bp]
-        out["flight_time"][sl] = ft[ar, bp]
-        out["best_pv_index"][sl] = bp
-        out["best_pv_x"][sl] = _pv["x"][bp]
-        out["best_pv_y"][sl] = _pv["y"][bp]
-        out["best_pv_z"][sl] = _pv["z"][bp]
-
-        # DIRA
-        fx = vxyz[:, 0] - _pv["x"][bp]
-        fy = vxyz[:, 1] - _pv["y"][bp]
-        fz = vxyz[:, 2] - _pv["z"][bp]
-        fm = np.sqrt(fx**2 + fy**2 + fz**2)
-        dd = fm * sp
-        sdd = np.where(dd > 1e-16, dd, 1.0)
-        out["dira"][sl] = np.where(
-            dd > 1e-16, (fx * cpx + fy * cpy + fz * cpz) / sdd, 0.0
+    def _pick(jag):
+        return ak.to_numpy(
+            ak.where(has_pvs, ak.flatten(jag[best_pv], axis=-1), zero)
         )
 
-        # fdchi2 — full 3D Mahalanobis: delta^T (cov_SV + cov_PV)^{-1} delta
-        pv_cov = np.zeros((nc, 3, 3))
-        pv_cov[:, 0, 0] = _pv["cov_0_0"][bp]
-        pv_cov[:, 1, 0] = _pv["cov_1_0"][bp]
-        pv_cov[:, 0, 1] = _pv["cov_1_0"][bp]
-        pv_cov[:, 1, 1] = _pv["cov_1_1"][bp]
-        pv_cov[:, 2, 0] = _pv["cov_2_0"][bp]
-        pv_cov[:, 0, 2] = _pv["cov_2_0"][bp]
-        pv_cov[:, 2, 1] = _pv["cov_2_1"][bp]
-        pv_cov[:, 1, 2] = _pv["cov_2_1"][bp]
-        pv_cov[:, 2, 2] = _pv["cov_2_2"][bp]
-        total_cov = vcov + pv_cov
-        delta = np.column_stack([fx, fy, fz])
-        inv_cov = np.linalg.inv(total_cov)
-        out["fdchi2"][sl] = np.einsum("ni,nij,nj->n", delta, inv_cov, delta)
+    comb["composite_ip"] = _pick(ip_jag)
+    comb["composite_ip_chi2"] = _pick(pairs["ip_chi2"])
 
-        # flight_eta — pseudorapidity of flight direction (PV → SV)
-        safe_fm = np.where(fm > 1e-16, fm, 1.0)
-        ratio = np.clip(fz / safe_fm, -1 + 1e-7, 1 - 1e-7)
-        out["flight_eta"][sl] = np.where(fm > 1e-16, np.arctanh(ratio), 0.0)
+    bp = ak.flatten(best_pv, axis=-1)
+    bp_safe = ak.fill_none(bp, 0)
+    bp_np = ak.to_numpy(bp_safe)
+    comb["best_pv_index"] = ak.to_numpy(ak.where(has_pvs, bp_safe, 0)).astype(
+        float
+    )
 
-        # mcor — corrected mass: sqrt(m_vis^2 + p_perp^2) + sqrt(p_perp^2)
-        pperp2 = (
-            (cpy * fz - fy * cpz) ** 2
-            + (cpz * fx - fz * cpx) ** 2
-            + (cpx * fy - fx * cpy) ** 2
-        ) / np.maximum(fm**2, 1e-32)
-        m_vis2 = np.maximum(ce**2 - cpx**2 - cpy**2 - cpz**2, 0.0)
-        out["mcor"][sl] = np.sqrt(m_vis2 + pperp2) + np.sqrt(pperp2)
+    if has_time:
+        comb["time_residual"] = _pick(pairs["time_residual"])
+        comb["time_chi2"] = _pick(pairs["time_chi2"])
+        comb["flight_time"] = _pick(pairs["flight_time"])
 
-        offset += nc
+    # Best PV fields — use global PV index
+    has_pvs_np = ak.to_numpy(has_pvs)
+    best_pv_global = pv_offsets[evt_per_cand] + bp_np
 
-    return out
+    _write_best_pv_fields(
+        comb,
+        pvs,
+        lambda f: np.where(
+            has_pvs_np, _flatten_field(pvs, f)[best_pv_global], 0.0
+        ),
+    )
+
+    # --- Derived physics quantities ---
+    compute_composite_dira(comb)
+    compute_composite_fdchi2(comb)
+    compute_composite_flight_eta(comb)
+    compute_composite_mcor(comb)
+
+
+def fit_track_t0(tracks):
+    """Fit track t0 from TV hits. Adds time and sigma_time to tracks."""
+    if "mass" not in tracks:
+        raise ValueError(
+            "fit_track_t0 requires a 'mass' field — call set_tracks_pid first"
+        )
+
+    z = tracks["z"]
+    tx, ty = tracks["tx"], tracks["ty"]
+    qop = tracks["qop"]
+    p = 1.0 / abs(qop)
+    mass = tracks["mass"]
+    hit_z, hit_t = tracks["tvhits_z"], tracks["tvhits_t"]
+
+    slope_factor = (1.0 + tx**2 + ty**2) ** 0.5
+    energy = (p**2 + mass**2) ** 0.5
+    beta_c = (p / energy) * c_light
+
+    t0_per_hit = hit_t - (hit_z - z) * slope_factor / beta_c
+    n_hits = ak.count(t0_per_hit, axis=-1)
+
+    time = ak.where(
+        n_hits > 0,
+        ak.sum(t0_per_hit, axis=-1) / ak.where(n_hits > 0, n_hits, 1),
+        0.0,
+    )
+
+    residuals_sq = (t0_per_hit - time) ** 2
+    variance = ak.where(
+        n_hits > 1,
+        ak.sum(residuals_sq, axis=-1) / ak.where(n_hits > 1, n_hits, 1),
+        0.0,
+    )
+    sigma_time = ak.where(
+        n_hits > 1,
+        (variance**0.5) / (n_hits**0.5),
+        ak.where(n_hits == 1, 1e9, 1e9),
+    )
+    sigma_time = ak.where(sigma_time < 1e-12, 1e-12, sigma_time)
+
+    tracks["time"] = time
+    tracks["sigma_time"] = sigma_time
+    return tracks
+
+
+def compute_default_track_quantities(tracks):
+    """Derive p, charge, pt, eta, and t0 from raw track state."""
+
+    qop = tracks["qop"]
+    p = 1.0 / abs(qop)
+    tracks["p"] = p
+    tracks["charge"] = ak.where(qop > 0, 1, -1)
+
+    tx, ty = tracks["tx"], tracks["ty"]
+    norm = (1.0 + tx**2 + ty**2) ** 0.5
+    dx, dy, dz = tx / norm, ty / norm, 1.0 / norm
+    tracks["pt"] = p * (dx**2 + dy**2) ** 0.5
+
+    p_dir = (dx**2 + dy**2 + dz**2) ** 0.5
+    denom = ak.where(abs(p_dir - dz) < 1e-30, 1e-30, p_dir - dz)
+    tracks["eta"] = 0.5 * np.log((p_dir + dz) / denom)
+
+    return tracks

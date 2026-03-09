@@ -10,7 +10,217 @@ import unittest
 import awkward as ak
 import numpy as np
 
-from trackcomb.truth import bkgcat, count_true_decays, truth_match_candidates
+from trackcomb.models import n_daughters
+from trackcomb.truth import (
+    _first_nonempty_int,
+    compute_bkgcat,
+    count_true_decays,
+)
+
+
+def _has_b_quark(pdg_id):
+    n = abs(pdg_id)
+    return (
+        (n // 100) % 10 == 5 or (n // 1000) % 10 == 5 or (n // 10000) % 10 == 5
+    )
+
+
+def _has_c_quark(pdg_id):
+    n = abs(pdg_id)
+    return (
+        (n // 100) % 10 == 4 or (n // 1000) % 10 == 4 or (n // 10000) % 10 == 4
+    )
+
+
+def _bkgcat_loop(candidates):
+    """Loop-based bkgcat reference implementation for validation."""
+    n_body = n_daughters(candidates)
+    if n_body == 0:
+        raise ValueError(
+            "No daughter{k}_global_index fields found in candidates"
+        )
+
+    mother_pdg = _first_nonempty_int(candidates, "pid")
+
+    daughter_pools = candidates["_daughter_pools"]
+    daughter_pdgs = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        if "pid" in pool:
+            gi_arr = candidates[f"daughter{k}_global_index"]
+            flat_pid = ak.flatten(pool["pid"])
+            try:
+                first_gi = int(ak.flatten(gi_arr)[0])
+                daughter_pdgs.append(int(np.asarray(flat_pid)[first_gi]))
+            except (ValueError, IndexError):
+                daughter_pdgs.append(None)
+        else:
+            daughter_pdgs.append(None)
+
+    pool_mc_truth = []
+    pool_mc_pid = []
+    pool_mc_key = []
+    pool_mc_pv_key = []
+    pool_mc_fromsignal = []
+    pool_anc_pids = []
+    pool_anc_keys = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        pool_mc_truth.append(pool["mc_truth"].tolist())
+        pool_mc_pid.append(pool["mc_pid"].tolist())
+        pool_mc_key.append(pool["mc_key"].tolist())
+        pool_mc_pv_key.append(pool["mc_pv_key"].tolist())
+        pool_mc_fromsignal.append(pool["mc_fromsignal"].tolist())
+        pool_anc_pids.append(pool["mc_ancestor_pids"].tolist())
+        pool_anc_keys.append(pool["mc_ancestor_keys"].tolist())
+
+    daughter_gi_lists = [
+        candidates[f"daughter{k}_global_index"].tolist() for k in range(n_body)
+    ]
+    pool_offsets_list = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        pc = ak.to_numpy(ak.num(pool["x"]))
+        off = np.zeros(len(pc) + 1, dtype=np.int64)
+        np.cumsum(pc, out=off[1:])
+        pool_offsets_list.append(off)
+
+    n_cands_list = ak.num(candidates["vertex_x"]).tolist()
+    n_events = len(n_cands_list)
+
+    results = []
+    for evt in range(n_events):
+        n_cands = n_cands_list[evt]
+        cats = np.full(n_cands, 130, dtype=int)
+
+        for ci in range(n_cands):
+            mc_truths = []
+            mc_pids = []
+            mc_keys = []
+            mc_pv_keys = []
+            mc_fromsignals = []
+            anc_pid_lists = []
+            anc_key_lists = []
+            for k in range(n_body):
+                gi = int(daughter_gi_lists[k][evt][ci])
+                pool_idx = gi - int(pool_offsets_list[k][evt])
+                mc_truths.append(pool_mc_truth[k][evt][pool_idx])
+                mc_pids.append(pool_mc_pid[k][evt][pool_idx])
+                mc_keys.append(pool_mc_key[k][evt][pool_idx])
+                mc_pv_keys.append(pool_mc_pv_key[k][evt][pool_idx])
+                mc_fromsignals.append(pool_mc_fromsignal[k][evt][pool_idx])
+                anc_pid_lists.append(pool_anc_pids[k][evt][pool_idx])
+                anc_key_lists.append(pool_anc_keys[k][evt][pool_idx])
+
+            G = any(t == 0 for t in mc_truths)
+            if G:
+                cats[ci] = 60
+                continue
+
+            key_set = set()
+            K = False
+            for mk in mc_keys:
+                if mk in key_set:
+                    K = True
+                    break
+                key_set.add(mk)
+            if K:
+                cats[ci] = 63
+                continue
+
+            L = False
+            for k1 in range(n_body):
+                for k2 in range(n_body):
+                    if k1 == k2:
+                        continue
+                    if mc_keys[k1] in anc_key_lists[k2]:
+                        L = True
+                        break
+                if L:
+                    break
+            if L:
+                cats[ci] = 66
+                continue
+
+            ancestor_key_sets = [set(anc_key_lists[k]) for k in range(n_body)]
+            common_keys = ancestor_key_sets[0]
+            for s in ancestor_key_sets[1:]:
+                common_keys = common_keys & s
+
+            A = len(common_keys) > 0
+
+            if A:
+                C = True
+                for k in range(n_body):
+                    if daughter_pdgs[k] is not None:
+                        if abs(mc_pids[k]) != abs(daughter_pdgs[k]):
+                            C = False
+                            break
+
+                if not C:
+                    cats[ci] = 30
+                    continue
+
+                D = False
+                if mother_pdg is not None:
+                    for k in range(n_body):
+                        for pid, key in zip(
+                            anc_pid_lists[k], anc_key_lists[k]
+                        ):
+                            if key in common_keys and abs(pid) == abs(
+                                mother_pdg
+                            ):
+                                D = True
+                                break
+                        if D:
+                            break
+
+                if not D:
+                    cats[ci] = 20
+                    continue
+
+                S = all(f == 1 for f in mc_fromsignals)
+                cats[ci] = 0 if S else 10
+            else:
+                valid_pv_keys = [k for k in mc_pv_keys if k != -1]
+                H = (
+                    len(set(valid_pv_keys)) > 1
+                    if len(valid_pv_keys) > 1
+                    else False
+                )
+                if H:
+                    cats[ci] = 100
+                    continue
+
+                I = False
+                for k in range(n_body):
+                    for pid in anc_pid_lists[k]:
+                        if _has_b_quark(pid):
+                            I = True
+                            break
+                    if I:
+                        break
+                if I:
+                    cats[ci] = 110
+                    continue
+
+                J = False
+                for k in range(n_body):
+                    for pid in anc_pid_lists[k]:
+                        if _has_c_quark(pid):
+                            J = True
+                            break
+                    if J:
+                        break
+                if J:
+                    cats[ci] = 120
+                    continue
+
+                cats[ci] = 130
+
+        results.append(cats)
+
+    return ak.Array(results)
 
 
 def _make_tracks_with_mc(n_events=2):
@@ -154,22 +364,105 @@ class TestBatchCountTrueDecays(unittest.TestCase):
         self.assertEqual(counts.shape, (2,))
 
 
+def _truth_match_candidates(candidates):
+    """Loop-based truth matching reference implementation for testing."""
+    n_body = n_daughters(candidates)
+    mother_pdg = _first_nonempty_int(candidates, "pid")
+
+    daughter_pools = candidates["_daughter_pools"]
+    daughter_pdgs = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        if "pid" in pool:
+            gi = candidates[f"daughter{k}_global_index"]
+            flat_pid = ak.flatten(pool["pid"])
+            try:
+                first_gi = int(ak.flatten(gi)[0])
+                daughter_pdgs.append(int(np.asarray(flat_pid)[first_gi]))
+            except (ValueError, IndexError):
+                daughter_pdgs.append(None)
+        else:
+            daughter_pdgs.append(None)
+    expected = (
+        sorted(abs(p) for p in daughter_pdgs)
+        if all(p is not None for p in daughter_pdgs)
+        else None
+    )
+
+    pool_mc_pid = []
+    pool_anc_pids = []
+    pool_anc_keys = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        pool_mc_pid.append(pool["mc_pid"].tolist())
+        pool_anc_pids.append(pool["mc_ancestor_pids"].tolist())
+        pool_anc_keys.append(pool["mc_ancestor_keys"].tolist())
+
+    daughter_gi_lists = [
+        candidates[f"daughter{k}_global_index"].tolist() for k in range(n_body)
+    ]
+    pool_offsets = []
+    for k in range(n_body):
+        pool = daughter_pools[k]
+        pc = ak.to_numpy(ak.num(pool["x"]))
+        off = np.zeros(len(pc) + 1, dtype=np.int64)
+        np.cumsum(pc, out=off[1:])
+        pool_offsets.append(off)
+
+    n_cands_list = ak.num(candidates["vertex_x"]).tolist()
+    n_events = len(n_cands_list)
+
+    results = []
+    for evt in range(n_events):
+        n_cands = n_cands_list[evt]
+        matched = np.zeros(n_cands, dtype=bool)
+        for ci in range(n_cands):
+            ancestor_sets = []
+            daughter_mc_pids = []
+            for k in range(n_body):
+                gi = int(daughter_gi_lists[k][evt][ci])
+                pool_idx = gi - int(pool_offsets[k][evt])
+                anc_pids = pool_anc_pids[k][evt][pool_idx]
+                anc_keys = pool_anc_keys[k][evt][pool_idx]
+                mc_pid = pool_mc_pid[k][evt][pool_idx]
+                daughter_mc_pids.append(mc_pid)
+                matching_keys = set()
+                for pid, key in zip(anc_pids, anc_keys):
+                    if abs(pid) == abs(mother_pdg):
+                        matching_keys.add(key)
+                ancestor_sets.append(matching_keys)
+            if not ancestor_sets or not ancestor_sets[0]:
+                continue
+            common = ancestor_sets[0]
+            for s in ancestor_sets[1:]:
+                common &= s
+            if not common:
+                continue
+            if expected is not None:
+                actual = sorted(abs(p) for p in daughter_mc_pids)
+                if actual != expected:
+                    continue
+            matched[ci] = True
+        results.append(matched)
+    return ak.Array(results)
+
+
 class TestBatchTruthMatchCandidates(unittest.TestCase):
-    """Test truth_match_candidates with synthetic candidates."""
+    """Test _truth_match_candidates with synthetic candidates."""
 
     def _make_candidates(self, tracks):
         """Fake candidates: evt0 has 1 signal + 2 bkg, evt1 has 1 signal + 1 bkg."""
+        # Compute pool offsets for global_index
+        # Event 0: 4 tracks (offsets: 0), Event 1: 3 tracks (offsets: 4)
+        # global_index = pool_offset[evt] + local_index
+        # evt0: local [0,0,0] -> global [0,0,0]; local [1,3,2] -> global [1,3,2]
+        # evt1: local [0,0] -> global [4,4]; local [1,2] -> global [5,6]
         return {
             "vertex_x": ak.Array([[0.0, 0.0, 0.0], [0.0, 0.0]]),
             "daughter0_track_id": ak.Array([[0, 0, 0], [0, 0]]),
             "daughter1_track_id": ak.Array([[1, 3, 2], [1, 2]]),
-            # pool_index is the local position within the pool (same as
-            # track_id here since both daughters draw from the same full pool)
-            "daughter0_pool_index": ak.Array([[0, 0, 0], [0, 0]]),
-            "daughter1_pool_index": ak.Array([[1, 3, 2], [1, 2]]),
-            # Daughter PIDs (pi+ hypothesis for both daughters, PDG 211)
-            "daughter0_pid": ak.Array([[211, 211, 211], [211, 211]]),
-            "daughter1_pid": ak.Array([[211, 211, 211], [211, 211]]),
+            "daughter0_global_index": ak.Array([[0, 0, 0], [4, 4]]),
+            "daughter1_global_index": ak.Array([[1, 3, 2], [5, 6]]),
             # Mother PDG (K_S^0 = 310)
             "pid": ak.Array([[310, 310, 310], [310, 310]]),
             # Reference to the underlying track pools
@@ -180,7 +473,7 @@ class TestBatchTruthMatchCandidates(unittest.TestCase):
         """Signal candidates are correctly identified."""
         tracks = _make_tracks_with_mc()
         candidates = self._make_candidates(tracks)
-        matched = truth_match_candidates(candidates)
+        matched = _truth_match_candidates(candidates)
         # Event 0: cand0=True, cand1=False, cand2=False
         self.assertTrue(matched[0][0])
         self.assertFalse(matched[0][1])
@@ -189,14 +482,13 @@ class TestBatchTruthMatchCandidates(unittest.TestCase):
         self.assertTrue(matched[1][0])
         self.assertFalse(matched[1][1])
 
-    def test_truth_match_without_daughters(self):
-        """Without daughter pid fields, only common ancestor matters."""
+    def test_truth_match_without_pid_field(self):
+        """Without 'pid' in pool, only common ancestor matters (no PID check)."""
         tracks = _make_tracks_with_mc()
+        # The pool doesn't have 'pid' field (no set_tracks_pid called),
+        # so daughter PID check is skipped
         candidates = self._make_candidates(tracks)
-        # Remove daughter{k}_pid so daughter check is skipped
-        del candidates["daughter0_pid"]
-        del candidates["daughter1_pid"]
-        matched = truth_match_candidates(candidates)
+        matched = _truth_match_candidates(candidates)
         # Event 0: cand0=True (shared Ks100), cand1=False, cand2=False (diff keys)
         self.assertTrue(matched[0][0])
         self.assertFalse(matched[0][1])
@@ -205,7 +497,7 @@ class TestBatchTruthMatchCandidates(unittest.TestCase):
     def test_returns_jagged_bool(self):
         tracks = _make_tracks_with_mc()
         candidates = self._make_candidates(tracks)
-        matched = truth_match_candidates(candidates)
+        matched = _truth_match_candidates(candidates)
         self.assertEqual(len(matched), 2)
         self.assertEqual(len(matched[0]), 3)
         self.assertEqual(len(matched[1]), 2)
@@ -217,14 +509,12 @@ class TestBatchTruthMatchCandidates(unittest.TestCase):
             "vertex_x": ak.Array([[], []]),
             "daughter0_track_id": ak.Array([[], []]),
             "daughter1_track_id": ak.Array([[], []]),
-            "daughter0_pool_index": ak.Array([[], []]),
-            "daughter1_pool_index": ak.Array([[], []]),
-            "daughter0_pid": ak.Array([[], []]),
-            "daughter1_pid": ak.Array([[], []]),
+            "daughter0_global_index": ak.Array([[], []]),
+            "daughter1_global_index": ak.Array([[], []]),
             "pid": ak.Array([[], []]),
             "_daughter_pools": [tracks, tracks],
         }
-        matched = truth_match_candidates(candidates)
+        matched = _truth_match_candidates(candidates)
         self.assertEqual(len(matched[0]), 0)
         self.assertEqual(len(matched[1]), 0)
 
@@ -264,14 +554,27 @@ class TestBkgCat(unittest.TestCase):
     def _make_candidates(
         self, pool, daughter0_idx, daughter1_idx, mother_pid, d0_pid, d1_pid
     ):
-        """Build a single-event candidates container."""
+        """Build a single-event candidates container.
+
+        daughter0_idx/daughter1_idx are local indices within a single-event pool,
+        which equal global indices since there's only one event (offset=0).
+        d0_pid/d1_pid are set as the pool's 'pid' field via set_tracks_pid-like setup.
+        """
+        from trackcomb.pid import set_tracks_pid
+
         n = len(daughter0_idx)
+        # Set pid on pool so daughter PIDs can be looked up
+        if "pid" not in pool:
+            # Assign pid based on d0_pid (all tracks get same pid hypothesis)
+            pool["pid"] = ak.Array([[d0_pid] * len(pool["mc_truth"][0])])
+            pool["mass"] = ak.Array([[0.0] * len(pool["mc_truth"][0])])
+        # For single-event pool, global_index == local_index
         return {
-            "vertex_x": ak.Array([daughter0_idx]),  # dummy, just needs right length
-            "daughter0_pool_index": ak.Array([daughter0_idx]),
-            "daughter1_pool_index": ak.Array([daughter1_idx]),
-            "daughter0_pid": ak.Array([[d0_pid] * n]),
-            "daughter1_pid": ak.Array([[d1_pid] * n]),
+            "vertex_x": ak.Array(
+                [daughter0_idx]
+            ),  # dummy, just needs right length
+            "daughter0_global_index": ak.Array([daughter0_idx]),
+            "daughter1_global_index": ak.Array([daughter1_idx]),
             "pid": ak.Array([[mother_pid] * n]),
             "_daughter_pools": [pool, pool],
         }
@@ -288,8 +591,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [100]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 0)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 0)
 
     def test_quasi_signal(self):
         """Cat 10: same as signal but mc_fromsignal=0."""
@@ -303,8 +606,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [100]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 10)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 10)
 
     def test_physics_background(self):
         """Cat 20: correct PID, common ancestor, but wrong mother type."""
@@ -319,8 +622,8 @@ class TestBkgCat(unittest.TestCase):
         )
         # Candidate says mother is Ks (310), but true ancestor is D0 (421)
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 20)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 20)
 
     def test_reflection(self):
         """Cat 30: common ancestor, right mother, but wrong daughter PID."""
@@ -334,8 +637,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [100]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 30)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 30)
 
     def test_ghost(self):
         """Cat 60: one daughter is a ghost (mc_truth=0)."""
@@ -349,8 +652,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], []],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 60)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 60)
 
     def test_clone(self):
         """Cat 63: two daughters share same mc_key."""
@@ -364,8 +667,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [100]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 63)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 63)
 
     def test_hierarchy(self):
         """Cat 66: one daughter's mc_key is in other daughter's ancestor chain."""
@@ -382,8 +685,8 @@ class TestBkgCat(unittest.TestCase):
             ],  # daughter1 has daughter0's mc_key=10 as ancestor
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 66)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 66)
 
     def test_pileup(self):
         """Cat 100: no common ancestor, different PV keys."""
@@ -397,8 +700,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [200]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 100)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 100)
 
     def test_from_b_event(self):
         """Cat 110: no common ancestor, same PV, b-hadron in ancestry."""
@@ -412,8 +715,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [200]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 110)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 110)
 
     def test_from_c_event(self):
         """Cat 120: no common ancestor, same PV, c-hadron but no b-hadron."""
@@ -427,8 +730,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [200]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 120)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 120)
 
     def test_light_particle(self):
         """Cat 130: no common ancestor, same PV, no b or c hadrons."""
@@ -442,8 +745,8 @@ class TestBkgCat(unittest.TestCase):
             mc_ancestor_keys=[[100], [200]],
         )
         cands = self._make_candidates(pool, [0], [1], 310, 211, 211)
-        cats = bkgcat(cands)
-        self.assertEqual(int(cats[0][0]), 130)
+        compute_bkgcat(cands)
+        self.assertEqual(int(cands["bkgcat"][0][0]), 130)
 
 
 class TestPropagateMcTruth(unittest.TestCase):
@@ -493,12 +796,13 @@ class TestPropagateMcTruth(unittest.TestCase):
                 ]
             ),
         }
-        for i in range(4):
+        tracks["qop"] = tracks["charge"] / tracks["p"]
+        for i in range(5):
             for j in range(i + 1):
                 val = 0.001 if i == j else 0.0
                 tracks[f"cov_{i}_{j}"] = ak.Array([[val] * 4, [val] * 2])
 
-        tracks = set_tracks_pid(tracks, "mu+")
+        set_tracks_pid(tracks, "mu+")
 
         pvs = {
             "x": ak.Array([[0.0], [0.0]]),
@@ -519,7 +823,7 @@ class TestPropagateMcTruth(unittest.TestCase):
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
+        cands = combine([pos, neg], pvs)
         for field in (
             "mc_truth",
             "mc_pid",
@@ -538,7 +842,7 @@ class TestPropagateMcTruth(unittest.TestCase):
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
+        cands = combine([pos, neg], pvs)
 
         # Find candidates where mc_truth == 1
         flat_truth = ak.to_numpy(ak.flatten(cands["mc_truth"]))
@@ -562,7 +866,7 @@ class TestPropagateMcTruth(unittest.TestCase):
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
+        cands = combine([pos, neg], pvs)
 
         flat_truth = ak.to_numpy(ak.flatten(cands["mc_truth"]))
         flat_key = ak.to_numpy(ak.flatten(cands["mc_key"]))
@@ -581,7 +885,7 @@ class TestPropagateMcTruth(unittest.TestCase):
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
+        cands = combine([pos, neg], pvs)
 
         flat_truth = ak.to_numpy(ak.flatten(cands["mc_truth"]))
         flat_key = ak.to_numpy(ak.flatten(cands["mc_key"]))
@@ -605,7 +909,7 @@ class TestPropagateMcTruth(unittest.TestCase):
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
+        cands = combine([pos, neg], pvs)
 
         flat_truth = ak.to_numpy(ak.flatten(cands["mc_truth"]))
         flat_pid = ak.to_numpy(ak.flatten(cands["mc_pid"]))
@@ -623,16 +927,16 @@ class TestPropagateMcTruth(unittest.TestCase):
 
     def test_bkgcat_on_propagated_truth(self):
         """bkgcat() should work on candidates with propagated MC truth."""
-        from trackcomb import combine, apply_mask, pdg_id
+        from trackcomb import combine, apply_mask, set_composite_pid
 
         tracks, pvs = self._make_tracks_and_pvs()
         pos = apply_mask(tracks, tracks["charge"] > 0)
         neg = apply_mask(tracks, tracks["charge"] < 0)
-        cands = combine([pos, neg], pvs, use_timing=False)
-        cands["pid"] = pdg_id("B(s)0")
+        cands = combine([pos, neg], pvs)
+        set_composite_pid(cands, "B(s)0")
 
-        cats = bkgcat(cands)
-        flat_cats = ak.to_numpy(ak.flatten(cats))
+        compute_bkgcat(cands)
+        flat_cats = ak.to_numpy(ak.flatten(cands["bkgcat"]))
         flat_truth = ak.to_numpy(ak.flatten(cands["mc_truth"]))
         flat_pid = ak.to_numpy(ak.flatten(cands["mc_pid"]))
 
@@ -657,11 +961,14 @@ class TestPropagateMcTruth(unittest.TestCase):
             "time": ak.Array([[0.1, 0.1]]),
             "sigma_time": ak.Array([[0.01, 0.01]]),
             "track_id": ak.Array([[0, 1]]),
+            "qop": ak.Array([[1.0 / 50.0, -1.0 / 40.0]]),
         }
-        for i in range(4):
+        for i in range(5):
             for j in range(i + 1):
-                tracks[f"cov_{i}_{j}"] = ak.Array([[0.001 if i == j else 0.0] * 2])
-        tracks = set_tracks_pid(tracks, "mu+")
+                tracks[f"cov_{i}_{j}"] = ak.Array(
+                    [[0.001 if i == j else 0.0] * 2]
+                )
+        set_tracks_pid(tracks, "mu+")
         pvs = {
             "x": ak.Array([[0.0]]),
             "y": ak.Array([[0.0]]),
@@ -672,7 +979,7 @@ class TestPropagateMcTruth(unittest.TestCase):
             "cov_1_0": ak.Array([[0.0]]),
             "cov_1_1": ak.Array([[1e-4]]),
         }
-        cands = combine([tracks, tracks], pvs, use_timing=False)
+        cands = combine([tracks, tracks], pvs)
         # Should not crash and should NOT have mc_truth field
         self.assertNotIn("mc_truth", cands)
 
@@ -687,20 +994,108 @@ class TestPropagateMcTruth(unittest.TestCase):
         cands = combine(
             [pos, neg],
             pvs,
-            use_timing=False,
-            vertex_cuts=[lambda c: c["mass"] > 9999000],
+            combination_cuts=[lambda c: c["mass"] > 9999000],
         )
-        for field in (
-            "mc_truth",
-            "mc_pid",
-            "mc_key",
-            "mc_pv_key",
-            "mc_fromsignal",
-            "mc_ancestor_pids",
-            "mc_ancestor_keys",
-        ):
-            self.assertIn(field, cands, f"Missing MC field in empty: {field}")
-        self.assertEqual(len(cands["mc_truth"][0]), 0)
+        self.assertIsNone(
+            cands, "Should return None when all filtered pre-fit"
+        )
+
+
+class TestBkgcatVectorized(unittest.TestCase):
+    """Compare vectorized bkgcat against loop-based _bkgcat_loop."""
+
+    def _make_tracks_and_pvs(self):
+        """Reuse the same fixture from TestMCTruthPropagation."""
+        from trackcomb.pid import set_tracks_pid
+
+        rng = np.random.RandomState(99)
+        tracks = {
+            "x": ak.Array([rng.randn(4) * 0.1, rng.randn(2) * 0.1]),
+            "y": ak.Array([rng.randn(4) * 0.1, rng.randn(2) * 0.1]),
+            "z": ak.Array([[100.0] * 4, [100.0] * 2]),
+            "tx": ak.Array([rng.randn(4) * 0.01, rng.randn(2) * 0.01]),
+            "ty": ak.Array([rng.randn(4) * 0.01, rng.randn(2) * 0.01]),
+            "p": ak.Array(
+                [
+                    (np.abs(rng.randn(4)) * 10 + 20).tolist(),
+                    (np.abs(rng.randn(2)) * 10 + 20).tolist(),
+                ]
+            ),
+            "charge": ak.Array([[1.0, -1.0, 1.0, -1.0], [1.0, -1.0]]),
+            "time": ak.Array([[0.1] * 4, [0.1] * 2]),
+            "sigma_time": ak.Array([[0.01] * 4, [0.01] * 2]),
+            "track_id": ak.Array([[0, 1, 2, 3], [0, 1]]),
+            "mc_truth": ak.Array([[1, 1, 1, 1], [1, 1]]),
+            "mc_pid": ak.Array([[13, -13, 211, -211], [13, -13]]),
+            "mc_key": ak.Array([[10, 11, 12, 13], [20, 21]]),
+            "mc_pv_key": ak.Array([[0, 0, 0, 0], [1, 1]]),
+            "mc_fromsignal": ak.Array([[1, 1, 0, 0], [1, 1]]),
+            "mc_ancestor_pids": ak.Array(
+                [
+                    [[531, 999], [531, 999], [310, 888], [310, 888]],
+                    [[531, 999], [531, 999]],
+                ]
+            ),
+            "mc_ancestor_keys": ak.Array(
+                [
+                    [[100, 500], [100, 500], [200, 600], [200, 600]],
+                    [[300, 700], [300, 700]],
+                ]
+            ),
+        }
+        tracks["qop"] = tracks["charge"] / tracks["p"]
+        for i in range(5):
+            for j in range(i + 1):
+                val = 0.001 if i == j else 0.0
+                tracks[f"cov_{i}_{j}"] = ak.Array([[val] * 4, [val] * 2])
+
+        set_tracks_pid(tracks, "mu+")
+
+        pvs = {
+            "x": ak.Array([[0.0], [0.0]]),
+            "y": ak.Array([[0.0], [0.0]]),
+            "z": ak.Array([[0.0], [0.0]]),
+            "time": ak.Array([[0.0], [0.0]]),
+            "sigma_time": ak.Array([[0.05], [0.05]]),
+            "cov_0_0": ak.Array([[1e-4], [1e-4]]),
+            "cov_1_0": ak.Array([[0.0], [0.0]]),
+            "cov_1_1": ak.Array([[1e-4], [1e-4]]),
+        }
+        return tracks, pvs
+
+    def test_vectorized_matches_loop(self):
+        """Vectorized bkgcat must produce identical results to _bkgcat_loop."""
+        from trackcomb import apply_mask, combine, set_composite_pid
+
+        tracks, pvs = self._make_tracks_and_pvs()
+        pos = apply_mask(tracks, tracks["charge"] > 0)
+        neg = apply_mask(tracks, tracks["charge"] < 0)
+        cands = combine([pos, neg], pvs)
+        set_composite_pid(cands, "B(s)0")
+
+        compute_bkgcat(cands)
+        cats_vec = ak.to_numpy(ak.flatten(cands["bkgcat"]))
+        cats_loop = ak.to_numpy(ak.flatten(_bkgcat_loop(cands)))
+
+        np.testing.assert_array_equal(cats_vec, cats_loop)
+
+    def test_vectorized_matches_loop_ks(self):
+        """Test with K(S)0 PID assignment."""
+        from trackcomb import apply_mask, combine, set_composite_pid
+        from trackcomb.pid import set_tracks_pid
+
+        tracks, pvs = self._make_tracks_and_pvs()
+        set_tracks_pid(tracks, "pi+")
+        pos = apply_mask(tracks, tracks["charge"] > 0)
+        neg = apply_mask(tracks, tracks["charge"] < 0)
+        cands = combine([pos, neg], pvs)
+        set_composite_pid(cands, "K(S)0")
+
+        compute_bkgcat(cands)
+        cats_vec = ak.to_numpy(ak.flatten(cands["bkgcat"]))
+        cats_loop = ak.to_numpy(ak.flatten(_bkgcat_loop(cands)))
+
+        np.testing.assert_array_equal(cats_vec, cats_loop)
 
 
 if __name__ == "__main__":

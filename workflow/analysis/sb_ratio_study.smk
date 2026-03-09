@@ -4,45 +4,48 @@ _LUMIS = list(config["luminosities"].keys())
 
 rule all_sb_ratio_study:
     input:
-        expand(f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/bs_sb_vs_eta.png",
-               lumi=["1p5e34"]),
-        expand(f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/bs_mass_vs_eta.png",
-               lumi=["1p5e34"]),
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_lumi.png",
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_eta_by_lumi.png",
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_mass_by_lumi.png",
+        expand(
+            f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/sb_ratio_vs_eta.png",
+            lumi=["1p5e34"],
+        ),
+        expand(
+            f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/mass_vs_eta.png",
+            lumi=["1p5e34"],
+        ),
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu/sb_ratio_vs_lumi.png",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu/mass_vs_lumi.png",
 
 
-rule sb_ratio_bs_to_mumu:
+rule sb_ratio_vs_eta:
     input:
         full=f"{_OUTDIR}/{{lumi}}/reconstruction/bs_to_mumu/full.parquet",
-        script="physics/analysis/sb_ratio_study/bs_to_mumu.py",
+        script="physics/analysis/sb_ratio_study/sb_ratio_vs_eta.py",
     output:
-        f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/bs_sb_vs_eta.png",
-        f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/bs_mass_vs_eta.png",
+        f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/sb_ratio_vs_eta.png",
+        f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/mass_vs_eta.png",
     log:
         f"{_OUTDIR}/{{lumi}}/sb_ratio_study/bs_to_mumu/run.log",
     params:
         outdir=_OUTDIR,
     shell:
-        "PYTHONPATH=src python3 physics/analysis/sb_ratio_study/bs_to_mumu.py"
+        "PYTHONPATH=src python3 {input.script}"
         " --full {input.full}"
         " --out-dir {params.outdir}/{wildcards.lumi}/sb_ratio_study/bs_to_mumu"
         " --lumi {wildcards.lumi}"
         " > {log} 2>&1"
 
 
-rule sb_ratio_bs_to_mumu_vs_lumi:
+rule sb_ratio_vs_lumi:
     input:
-        expand(f"{_OUTDIR}/{{lumi}}/reconstruction/bs_to_mumu/full.parquet",
-               lumi=_LUMIS),
-        script="physics/analysis/sb_ratio_study/bs_to_mumu_vs_lumi.py",
+        expand(
+            f"{_OUTDIR}/{{lumi}}/reconstruction/bs_to_mumu/full.parquet", lumi=_LUMIS
+        ),
+        script="physics/analysis/sb_ratio_study/sb_ratio_vs_lumi.py",
     output:
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_lumi.png",
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_sb_vs_eta_by_lumi.png",
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/bs_mass_by_lumi.png",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu/sb_ratio_vs_lumi.png",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu/mass_vs_lumi.png",
     log:
-        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu_vs_lumi/run.log",
+        f"{_OUTDIR}/sb_ratio_study/bs_to_mumu/vs_lumi.log",
     params:
         outdir=_OUTDIR,
         input_args=" ".join(
@@ -50,7 +53,7 @@ rule sb_ratio_bs_to_mumu_vs_lumi:
             for lumi in _LUMIS
         ),
     shell:
-        "PYTHONPATH=src python3 physics/analysis/sb_ratio_study/bs_to_mumu_vs_lumi.py"
+        "PYTHONPATH=src python3 {input.script}"
         " --inputs {params.input_args}"
-        " --out-dir {params.outdir}/sb_ratio_study/bs_to_mumu_vs_lumi"
+        " --out-dir {params.outdir}/sb_ratio_study/bs_to_mumu"
         " > {log} 2>&1"

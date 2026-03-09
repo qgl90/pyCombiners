@@ -3,7 +3,7 @@ channels:
   - conda-forge
   - bioconda
 dependencies:
-  - python>=3.10,<3.13
+  - python=3.12
   # Config
   - pyyaml
   # Data I/O
@@ -33,3 +33,5 @@ dependencies:
   - clang-format
   # MVA
   - onnxruntime=*=*cpu*
+  # HEP
+  - decaylanguage

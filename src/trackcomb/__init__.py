@@ -10,70 +10,100 @@ except PackageNotFoundError:
 from .models import (
     Container,
     CutFunction,
-    infer_n_body,
+    n_daughters,
+    get_daughter,
+    gather_daughters_stack,
     apply_mask,
     apply_cuts,
     cut_min,
     cut_max,
     cut_range,
-    pick_along_inner,
+    any_in_tree,
+    all_in_tree,
+    sum_in_tree,
+    pick_inner,
+    gather_jagged,
 )
 from .io import (
-    load_tracks_root,
-    load_pvs_root,
-    load_events_root,
-    iter_events_root,
-    candidates_to_parquet,
+    load_events,
+    make_tracks,
+    make_pvs,
     candidates_to_dataframe,
-    extract_daughter_fields,
 )
 from .physics import (
-    ip_to_pvs,
-    flight_corrected_dt,
+    compute_track_pv_pairs,
     tracks_pv_association,
+    compute_default_track_quantities,
+    fit_track_t0,
+    vertex_fit_3d,
+    vertex_fit_3d_plus_time,
+    composite_pv_association,
 )
 from .combiner import combine
-from .truth import bkgcat, count_true_decays, truth_match_candidates
+from .truth import compute_bkgcat, count_reco_signal, count_true_decays
 
 from .pid import (
     pdg_id,
+    pdg_mass,
+    set_composite_pid,
     set_tracks_pid,
 )
 
 from .plot import make_figure
+from .configurable import configurable
+from .counters import counters, rate_counters, print_counters
+from .onnx import onnx_models
+from .runner import run_reconstruction
 
 __all__ = [
     # Container utilities
     "Container",
     "CutFunction",
-    "infer_n_body",
+    "n_daughters",
     "apply_mask",
     "apply_cuts",
     "cut_min",
     "cut_max",
     "cut_range",
-    "pick_along_inner",
+    "get_daughter",
+    "gather_daughters_stack",
+    "any_in_tree",
+    "all_in_tree",
+    "sum_in_tree",
+    "pick_inner",
+    "gather_jagged",
     # IO
-    "load_tracks_root",
-    "load_pvs_root",
-    "load_events_root",
-    "iter_events_root",
-    "candidates_to_parquet",
+    "load_events",
+    "make_tracks",
+    "make_pvs",
     "candidates_to_dataframe",
-    "extract_daughter_fields",
     # Physics (user-facing only)
-    "ip_to_pvs",
-    "flight_corrected_dt",
+    "compute_track_pv_pairs",
     "tracks_pv_association",
+    "compute_default_track_quantities",
+    "fit_track_t0",
+    "vertex_fit_3d",
+    "vertex_fit_3d_plus_time",
+    "composite_pv_association",
     # Pipeline
     "combine",
     # Truth matching
-    "bkgcat",
+    "compute_bkgcat",
+    "count_reco_signal",
     "count_true_decays",
-    "truth_match_candidates",
     # PID
     "pdg_id",
+    "pdg_mass",
+    "set_composite_pid",
     "set_tracks_pid",
     # Plotting
     "make_figure",
+    # Runner
+    "run_reconstruction",
+    # Utilities
+    "configurable",
+    "counters",
+    "rate_counters",
+    "print_counters",
+    "onnx_models",
 ]

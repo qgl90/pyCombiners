@@ -17,3 +17,4 @@ input
 !tests/input
 public/
 !.github
+!.pre-commit-config.yaml

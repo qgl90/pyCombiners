@@ -167,8 +167,7 @@ from trackcomb import (
     load_events_root, set_tracks_pid, apply_mask,
     tracks_pv_association, combine,
     cut_min, cut_max, cut_range,
-    candidates_to_dataframe, extract_daughter_fields,
-    pdg_id,
+    candidates_to_dataframe, pdg_id,
 )
 
 # Load data
@@ -192,10 +191,8 @@ candidates = combine(
 )
 candidates["pid"] = pdg_id("B(s)0")
 
-# Export to parquet
+# Export to parquet (includes all daughter fields, recursive for multi-level decays)
 df = candidates_to_dataframe(candidates)
-for k, v in extract_daughter_fields(candidates).items():
-    df[k] = v
 df.to_parquet("bs_candidates.parquet")
 ```
 
