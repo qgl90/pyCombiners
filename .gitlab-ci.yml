@@ -1,6 +1,7 @@
 stages:
   - check
   - test
+  - pipelines
 
 check-formatting:
   stage: check
@@ -42,3 +43,46 @@ unit-tests:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_COMMIT_BRANCH'
+
+# Physics pipelines: 1k-event smoke runs on the pycombiner VM (shell runner).
+# expire_in does not accept variables, hence one job per artifact policy:
+# MR artifacts expire after 7 days, main artifacts are kept forever.
+.pipeline:
+  stage: pipelines
+  tags:
+    - pyCombiner-cpu
+  variables:
+    MAMBA_ROOT_PREFIX: /data/micromamba
+  before_script:
+    - bash ci/ensure_env.sh
+  script:
+    - /data/micromamba/bin/micromamba run -n run5 snakemake
+      --snakefile workflow/${PIPELINE}.smk -c4
+      --configfile ci/${PIPELINE}.yaml
+  parallel:
+    matrix:
+      - PIPELINE:
+          - bs_to_phigamma
+          - calo_study
+          - ks_to_pipi
+          - bs_to_jpsiphi
+          - bs_to_mumu
+  artifacts:
+    paths:
+      - public/*/analysis/
+      - public/*/reconstruction/*.log
+    when: always
+
+pipeline:
+  extends: .pipeline
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  artifacts:
+    expire_in: 7 days
+
+pipeline-main:
+  extends: .pipeline
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  artifacts:
+    expire_in: never

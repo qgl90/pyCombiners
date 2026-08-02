@@ -9,8 +9,6 @@ from pathlib import Path
 import awkward as ak
 import numpy as np
 
-import pandas as pd
-
 from trackcomb import (
     all_in_tree,
     apply_cuts,
@@ -22,6 +20,9 @@ from trackcomb import (
     cut_min,
     cut_range,
     get_daughter,
+    load_event_info,
+    load_pvs,
+    load_tracks,
     onnx_models,
     run_reconstruction,
     set_tracks_pid,
@@ -31,12 +32,11 @@ from trackcomb import (
 
 
 @configurable
-def reconstruction(
-    events, model_path="models/two_track_mva.onnx", mva_cut=0.0
-):
+def reconstruction(chunk, model_path="models/two_track_mva.onnx", mva_cut=0.0):
     """Reconstruct 2-body SVs with MVA selection."""
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+    tracks = load_tracks(chunk)
+    pvs = load_pvs(chunk)
+    event_info = load_event_info(chunk)
 
     set_tracks_pid(tracks, "pi+")
 
@@ -63,6 +63,7 @@ def reconstruction(
                 == get_daughter(c, 1, "best_pv_index")
             ),
         ],
+        # combine() may return None when a cut stage empties the chunk
         composite_cuts=[
             cut_max("vertex_chi2", 20.0),
             cut_max("max_doca", 0.2),
@@ -77,6 +78,8 @@ def reconstruction(
         ],
     )
 
+    if candidates is None:
+        return None
     n_cands = int(ak.sum(ak.num(candidates["vertex_x"])))
     counters("after selection").add(n_cands)
     if n_cands == 0:
@@ -121,38 +124,35 @@ def main():
     parser = argparse.ArgumentParser(
         description="TwoTrackMVA inclusive 2-body SV reconstruction"
     )
-    parser.add_argument("--input", required=True, help="ROOT file path")
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple")
+    parser.add_argument(
+        "--input", required=True, help="ROOT file path (wildcards allowed)"
+    )
     parser.add_argument("--max-events", type=int, default=1000)
     parser.add_argument(
         "--model", default="models/two_track_mva.onnx", help="ONNX model path"
     )
     parser.add_argument("--mva-cut", type=float, default=0.0)
-    # parser.add_argument("--mva-cut", type=float, default=0.9569)
-    parser.add_argument("--slice-size", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(
-        "--out-dir", default="public/1p5e34/reconstruction/two_track_mva"
+        "--out-dir", default="public/bs_to_mumu/reconstruction"
     )
     args = parser.parse_args()
     args.max_events = args.max_events or None
 
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     reconstruction.global_bind(model_path=args.model, mva_cut=args.mva_cut)
 
-    results = run_reconstruction(
+    run_reconstruction(
         reconstruction,
         input_data=args.input,
-        tree_name=args.tree,
+        out=out_dir / "mva.parquet",
         max_events=args.max_events,
-        slice_size=args.slice_size,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
         print_throughput=True,
     )
-
-    dfs = [r for r in (results or []) if r is not None]
-    df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-    df.to_parquet(out_dir / "mva.parquet", index=False)
 
     print(f"\nSaved to {out_dir}")
 

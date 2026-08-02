@@ -8,7 +8,6 @@ from pathlib import Path
 
 import awkward as ak
 import numpy as np
-import pandas as pd
 
 from trackcomb import (
     apply_cuts,
@@ -23,6 +22,9 @@ from trackcomb import (
     cut_max,
     cut_min,
     cut_range,
+    load_event_info,
+    load_pvs,
+    load_tracks,
     pdg_id,
     run_reconstruction,
     set_composite_pid,
@@ -30,6 +32,10 @@ from trackcomb import (
     tracks_pv_association,
     all_in_tree,
 )
+
+
+def _load(chunk):
+    return load_tracks(chunk), load_pvs(chunk), load_event_info(chunk)
 
 
 def make_dataframe(candidates, event_info):
@@ -45,9 +51,8 @@ def make_dataframe(candidates, event_info):
     return df
 
 
-def cheated_reconstruction(events):
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+def cheated_reconstruction(chunk):
+    tracks, pvs, event_info = _load(chunk)
 
     n_true = int(
         np.sum(count_true_decays(tracks, "B(s)0", ["mu+", "mu-", "K+", "K-"]))
@@ -104,10 +109,9 @@ def cheated_reconstruction(events):
     return df
 
 
-def full_reconstruction(events):
+def full_reconstruction(chunk):
     """Full Bs -> J/psi(mu+mu-) phi(K+K-) reconstruction with cuts."""
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+    tracks, pvs, event_info = _load(chunk)
 
     tracks = tracks_pv_association(tracks, pvs)
     tracks = apply_cuts(
@@ -196,44 +200,40 @@ def main():
         description="Bs -> J/psi phi reconstruction"
     )
     parser.add_argument("--mode", required=True, choices=["cheated", "full"])
-    parser.add_argument("--input", required=True)
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple")
-    parser.add_argument("--max-events", type=int, default=1000)
-    parser.add_argument("--slice-size", type=int, default=1000)
     parser.add_argument(
-        "--out-dir", default="public/1p5e34/reconstruction/bs_to_jpsiphi"
+        "--input", required=True, help="ROOT file path (wildcards allowed)"
+    )
+    parser.add_argument("--max-events", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--out-dir", default="public/bs_to_jpsiphi/reconstruction"
     )
     parser.add_argument("--out-file", default=None)
     args = parser.parse_args()
     args.max_events = args.max_events or None
-
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.mode == "cheated":
         reco_fn = cheated_reconstruction
     else:
         reco_fn = full_reconstruction
 
-    results = run_reconstruction(
-        reco_fn,
-        input_data=args.input,
-        tree_name=args.tree,
-        max_events=args.max_events,
-        slice_size=args.slice_size,
-        print_throughput=True,
-    )
-
-    dfs = [r for r in (results or []) if r is not None]
-    df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
     out_path = (
         Path(args.out_file)
         if args.out_file
-        else out_dir / f"{args.mode}.parquet"
+        else Path(args.out_dir) / f"{args.mode}.parquet"
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+
+    run_reconstruction(
+        reco_fn,
+        input_data=args.input,
+        out=out_path,
+        max_events=args.max_events,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
+        print_throughput=True,
+    )
+
     print(f"\nMode: {args.mode}")
     print(f"Saved to {out_path}")
 

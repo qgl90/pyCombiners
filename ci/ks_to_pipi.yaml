@@ -1,0 +1,2 @@
+# CI override: 1k local sample on the runner VM.
+input: /data/ci/input/eventtuple_minbias_1p0e34_1000evts.root

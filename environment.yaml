@@ -9,6 +9,7 @@ dependencies:
   # Data I/O
   - uproot
   - awkward
+  - pyarrow
   # Numerics
   - numpy
   - scipy
@@ -18,20 +19,11 @@ dependencies:
   - mplhep
   - mscorefonts
   - root
-  # Histogram utilities
-  - hist
-  - boost-histogram
   # Particle data
   - particle
   # Workflow
   - snakemake-minimal
-  # Dev
-  - pip:
-    - pymupdf
-  # format
-  - yapf==0.24.0
-  - clang-format
+  # Test
+  - pytest
   # MVA
   - onnxruntime=*=*cpu*
-  # HEP
-  - decaylanguage

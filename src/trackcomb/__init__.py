@@ -21,14 +21,24 @@ from .models import (
     any_in_tree,
     all_in_tree,
     sum_in_tree,
+    min_in_tree,
+    max_in_tree,
     pick_inner,
     gather_jagged,
 )
 from .io import (
+    event_stream,
+    read,
     load_events,
-    make_tracks,
-    make_pvs,
     candidates_to_dataframe,
+)
+from .components import (
+    load_tracks,
+    load_pvs,
+    load_event_info,
+    load_reconstructible_tracks,
+    load_calo_clusters,
+    load_reconstructible_calo_clusters,
 )
 from .physics import (
     compute_track_pv_pairs,
@@ -70,12 +80,20 @@ __all__ = [
     "any_in_tree",
     "all_in_tree",
     "sum_in_tree",
+    "min_in_tree",
+    "max_in_tree",
     "pick_inner",
     "gather_jagged",
     # IO
+    "event_stream",
+    "read",
     "load_events",
-    "make_tracks",
-    "make_pvs",
+    "load_tracks",
+    "load_pvs",
+    "load_event_info",
+    "load_reconstructible_tracks",
+    "load_calo_clusters",
+    "load_reconstructible_calo_clusters",
     "candidates_to_dataframe",
     # Physics (user-facing only)
     "compute_track_pv_pairs",

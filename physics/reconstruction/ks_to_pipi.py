@@ -9,10 +9,9 @@ from pathlib import Path
 import awkward as ak
 import numpy as np
 
-import pandas as pd
-
 from trackcomb import (
     configurable,
+    apply_cuts,
     apply_mask,
     candidates_to_dataframe,
     combine,
@@ -23,6 +22,9 @@ from trackcomb import (
     cut_max,
     cut_min,
     cut_range,
+    load_event_info,
+    load_pvs,
+    load_tracks,
     run_reconstruction,
     set_composite_pid,
     set_tracks_pid,
@@ -30,6 +32,10 @@ from trackcomb import (
     compute_bkgcat,
     pdg_id,
 )
+
+
+def _load(chunk):
+    return load_tracks(chunk), load_pvs(chunk), load_event_info(chunk)
 
 
 def make_dataframe(candidates, event_info):
@@ -45,9 +51,20 @@ def make_dataframe(candidates, event_info):
     return df
 
 
-def cheated_reconstruction(events):
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+def rich_electron_veto(tracks):
+    """Reject electron-like tracks; tracks without RICH info are kept.
+
+    RICH DLLs are relative to the pion hypothesis (DLL_Pion == 0 by
+    construction), so pion ID for Ks daughters is expressed as vetoes.
+    Kaon/proton vetoes were scanned and rejected: Ks background is
+    dominated by genuine pion combinatorics, PID cannot remove it.
+    """
+    return ~(tracks["rich_dll_electron"] > 0.0)
+
+
+@configurable
+def cheated_reconstruction(chunk, candidate_cuts=None):
+    tracks, pvs, event_info = _load(chunk)
 
     n_true = int(np.sum(count_true_decays(tracks, "K(S)0", ["pi+", "pi-"])))
 
@@ -67,6 +84,12 @@ def cheated_reconstruction(events):
         return None
     set_composite_pid(candidates, "K(S)0")
 
+    if candidate_cuts:
+        candidates = apply_cuts(candidates, candidate_cuts)
+        if int(ak.sum(ak.num(candidates["vertex_x"]))) == 0:
+            rate_counters("cheated efficiency").add(0, n_true)
+            return None
+
     compute_bkgcat(candidates)
     candidates = apply_mask(candidates, candidates["bkgcat"] <= 10)
 
@@ -82,9 +105,8 @@ def cheated_reconstruction(events):
 
 
 @configurable
-def reconstruction(events, mode="full"):
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+def reconstruction(chunk, mode="full"):
+    tracks, pvs, event_info = _load(chunk)
 
     tracks = tracks_pv_association(tracks, pvs)
     set_tracks_pid(tracks, "pi+")
@@ -93,7 +115,11 @@ def reconstruction(events, mode="full"):
 
     if mode == "full":
         cuts = {
-            "track_cuts": [cut_min("pt", 50), cut_min("min_ip", 0.1)],
+            "track_cuts": [
+                cut_min("pt", 50),
+                cut_min("min_ip", 0.1),
+                rich_electron_veto,
+            ],
             "combination_cuts": [
                 cut_max("max_doca", 0.15),
                 cut_range("mass", 470, 520),
@@ -141,12 +167,14 @@ def main():
     parser.add_argument(
         "--mode", required=True, choices=["cheated", "full", "dist"]
     )
-    parser.add_argument("--input", required=True, help="ROOT file path")
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple")
-    parser.add_argument("--max-events", type=int, default=1000)
-    parser.add_argument("--slice-size", type=int, default=1000)
     parser.add_argument(
-        "--out-dir", default="public/1p5e34/reconstruction/ks_to_pipi"
+        "--input", required=True, help="ROOT file path (wildcards allowed)"
+    )
+    parser.add_argument("--max-events", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--out-dir", default="public/ks_to_pipi/reconstruction"
     )
     parser.add_argument(
         "--out-file", default=None, help="Override output file path"
@@ -154,34 +182,27 @@ def main():
     args = parser.parse_args()
     args.max_events = args.max_events or None
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     if args.mode == "cheated":
         reco_fn = cheated_reconstruction
     else:
         reconstruction.global_bind(mode=args.mode)
         reco_fn = reconstruction
 
-    results = run_reconstruction(
-        reco_fn,
-        input_data=args.input,
-        tree_name=args.tree,
-        max_events=args.max_events,
-        slice_size=args.slice_size,
-        print_throughput=True,
-    )
-
-    dfs = [r for r in (results or []) if r is not None]
-    df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-
     out_path = (
         Path(args.out_file)
         if args.out_file
-        else out_dir / f"{args.mode}.parquet"
+        else Path(args.out_dir) / f"{args.mode}.parquet"
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+
+    run_reconstruction(
+        reco_fn,
+        input_data=args.input,
+        out=out_path,
+        max_events=args.max_events,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
+        print_throughput=True,
+    )
 
     print(f"\nMode: {args.mode}")
     print(f"Saved to {out_path}")

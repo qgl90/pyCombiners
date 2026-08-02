@@ -1,0 +1,10 @@
+# Bs -> mu mu pipeline (incl. track-PV association and TwoTrackMVA).
+output_dir: public/bs_to_mumu
+input: input/eventtuple_bsmumu_1p0e34_1000evts.root
+input_minbias: input/eventtuple_minbias_1p0e34_1000evts.root
+max_events_full: 1000
+max_events_full_notime: 1000
+max_events_dist: 200
+max_events_pvtag: 1000
+max_events_two_track_mva: 1000
+max_events_track_pv: 200

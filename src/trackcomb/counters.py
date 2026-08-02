@@ -44,3 +44,22 @@ def print_counters():
 def reset_counters():
     _counter_values.clear()
     _rate_values.clear()
+
+
+def snapshot_counters() -> dict:
+    """Plain-data snapshot (picklable) — used by worker processes."""
+    return {
+        "counters": dict(_counter_values),
+        "rates": {k: list(v) for k, v in _rate_values.items()},
+    }
+
+
+def merge_counters(snapshot: dict):
+    """Add a worker's snapshot into this process's counters."""
+    for name, n in snapshot["counters"].items():
+        _counter_values[name] = _counter_values.get(name, 0) + n
+    for name, (n_pass, n_total) in snapshot["rates"].items():
+        if name not in _rate_values:
+            _rate_values[name] = [0, 0]
+        _rate_values[name][0] += n_pass
+        _rate_values[name][1] += n_total
