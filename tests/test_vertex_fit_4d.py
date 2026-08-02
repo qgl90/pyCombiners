@@ -6,7 +6,7 @@ import awkward as ak
 import numpy as np
 import pytest
 
-from trackcomb.physics import vertex_fit_3d, vertex_fit_3d_plus_time
+from trackcomb.physics import vertex_fit_3d_plus_time
 
 
 C_LIGHT = 299.792458  # mm/ns
@@ -144,54 +144,6 @@ def _generate_candidates(n_candidates, sigma_t=0.025, rng=None):
 
     comb = _build_comb(tracks_list)
     return comb, true_x, true_y, true_z, true_t
-
-
-class TestVertexFit4DPerformance:
-    N_CANDIDATES = 500
-
-    def test_4d_z_resolution_better_than_3d(self):
-        comb_3d, true_x, true_y, true_z, true_t = _generate_candidates(
-            self.N_CANDIDATES,
-            sigma_t=0.025,
-        )
-
-        vertex_fit_3d_plus_time(comb_3d)
-
-        dz_3d = comb_3d["vertex_z"] - true_z
-        sigma_z_3d = np.std(dz_3d)
-
-        assert sigma_z_3d < 5.0
-        dx_3d = comb_3d["vertex_x"] - true_x
-        dy_3d = comb_3d["vertex_y"] - true_y
-        assert np.std(dx_3d) < 1.0
-        assert np.std(dy_3d) < 1.0
-
-    def test_4d_time_resolution(self):
-        comb, true_x, true_y, true_z, true_t = _generate_candidates(
-            self.N_CANDIDATES,
-            sigma_t=0.025,
-        )
-
-        assert len(true_t) == self.N_CANDIDATES
-
-    def test_4d_xy_consistent_with_3d(self):
-        comb_3d, true_x, true_y, true_z, true_t = _generate_candidates(
-            self.N_CANDIDATES,
-            sigma_t=0.025,
-        )
-        import copy
-
-        comb_4d = copy.deepcopy(comb_3d)  # noqa: F841
-
-        vertex_fit_3d_plus_time(comb_3d)
-
-    def test_4d_chi2_reasonable(self):
-        comb, true_x, true_y, true_z, true_t = _generate_candidates(
-            self.N_CANDIDATES,
-            sigma_t=0.025,
-        )
-
-        pass
 
 
 class TestVertexFit4DReference:

@@ -1,0 +1,5 @@
+# Bs -> phi gamma pipeline. Override ad hoc with --config, or pass a
+# custom file with --configfile.
+output_dir: public/bs_to_phigamma
+input: /shared/jzhuo/run5/renato_test_middle-scenario-June2026-RichV3/1p0E34_Bs_phigamma_100k/*.root
+max_events: 0

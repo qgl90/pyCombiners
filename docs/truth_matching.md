@@ -29,7 +29,9 @@ If you want to run truth matching manually (e.g. re-check after extra cuts), use
 ```python
 from trackcomb import truth_match_candidates
 
-matched = truth_match_candidates(candidates)  # jagged bool (events, candidates)
+matched = truth_match_candidates(
+    candidates
+)  # jagged bool (events, candidates)
 ```
 
 This checks if all daughters share a common MC ancestor matching the candidate's `pid` field,
@@ -123,6 +125,7 @@ n_signal = ak.sum(cats == 0)
 
 # Get signal-only candidates
 from trackcomb import apply_mask
+
 signal_mask = cats == 0
 signal_candidates = apply_mask(candidates, signal_mask)
 ```

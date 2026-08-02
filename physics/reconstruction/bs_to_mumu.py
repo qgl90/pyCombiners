@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 from typing import Any
 
 import awkward as ak
 import numpy as np
-
-import pandas as pd
 
 from trackcomb import (
     configurable,
@@ -30,6 +29,9 @@ from trackcomb import (
     cut_min,
     cut_range,
     get_daughter,
+    load_event_info,
+    load_pvs,
+    load_tracks,
     pdg_id,
     run_reconstruction,
     set_composite_pid,
@@ -52,9 +54,15 @@ def make_dataframe(candidates, event_info):
     return df
 
 
-def cheated_reconstruction(events):
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+def _load(chunk):
+    tracks = load_tracks(chunk)
+    pvs = load_pvs(chunk)
+    info = load_event_info(chunk)
+    return tracks, pvs, info
+
+
+def cheated_reconstruction(chunk):
+    tracks, pvs, event_info = _load(chunk)
 
     n_true = int(np.sum(count_true_decays(tracks, "B(s)0", ["mu+", "mu-"])))
 
@@ -88,11 +96,7 @@ def cheated_reconstruction(events):
     return df
 
 
-@configurable
-def reconstruction(events, mode="full"):
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
-
+def _reconstruct(tracks, pvs, event_info, mode):
     set_tracks_pid(tracks, "mu+")
     if mode == "dist":
         tracks = tracks_pv_association(tracks, pvs)
@@ -101,7 +105,10 @@ def reconstruction(events, mode="full"):
 
     if mode == "full":
         cuts: dict[str, Any] = {
-            "track_cuts": [cut_min("pt", 1000)],
+            "track_cuts": [
+                cut_min("pt", 1000),
+                cut_min("rich_dll_muon", -5.0),
+            ],
             "combination_cuts": [
                 cut_max("max_doca", 0.05),
                 cut_range("mass", 4700, 6000),
@@ -120,7 +127,10 @@ def reconstruction(events, mode="full"):
         }
     elif mode == "full_notime":
         cuts = {
-            "track_cuts": [cut_min("pt", 1000)],
+            "track_cuts": [
+                cut_min("pt", 1000),
+                cut_min("rich_dll_muon", -5.0),
+            ],
             "combination_cuts": [
                 cut_max("max_doca", 0.05),
                 cut_range("mass", 4700, 6000),
@@ -159,6 +169,8 @@ def reconstruction(events, mode="full"):
         raise ValueError(f"Unknown mode: {mode}")
 
     candidates = combine([pos_tracks, neg_tracks], pvs, **cuts)
+    if candidates is None:
+        return None
     set_composite_pid(candidates, "B(s)0")
 
     if int(ak.sum(ak.num(candidates["vertex_x"]))) == 0:
@@ -169,21 +181,32 @@ def reconstruction(events, mode="full"):
     return df
 
 
-def with_pvtag(fn, model_path, mva_cut):
-    """Wrap a reconstruction function with PV tagging prefilter."""
-
-    def wrapped(events):
-        events = pvtag_events(events, model_path, mva_cut)
-        return fn(events) if events is not None else None
-
-    return wrapped
+@configurable
+def reconstruction(chunk, mode="full"):
+    tracks, pvs, event_info = _load(chunk)
+    return _reconstruct(tracks, pvs, event_info, mode)
 
 
-def pvtag_events(events, model_path, mva_cut):
-    """Filter events by TwoTrackMVA PV tagging. Returns new events or None."""
-    tracks, pvs = events["tracks"], events["pvs"]
-    n_events = len(events["run_number"])
+def pvtag_reconstruction(chunk, mode, model_path, mva_cut):
+    tracks, pvs, event_info = _load(chunk)
+    filtered = pvtag_filter(
+        tracks, pvs, len(event_info["run_number"]), model_path, mva_cut
+    )
+    if filtered is None:
+        return None
+    tracks, pvs = filtered
+    return _reconstruct(tracks, pvs, event_info, mode)
 
+
+def with_pvtag(mode, model_path, mva_cut):
+    """Reconstruction with PV tagging prefilter (picklable for workers)."""
+    return partial(
+        pvtag_reconstruction, mode=mode, model_path=model_path, mva_cut=mva_cut
+    )
+
+
+def pvtag_filter(tracks, pvs, n_events, model_path, mva_cut):
+    """Filter tracks/PVs by TwoTrackMVA PV tagging. Returns pair or None."""
     # PV association for all tracks
     tracks = tracks_pv_association(tracks, pvs)
 
@@ -220,7 +243,7 @@ def pvtag_events(events, model_path, mva_cut):
         ],
     )
 
-    if int(ak.sum(ak.num(mva_cands["vertex_x"]))) == 0:
+    if mva_cands is None or int(ak.sum(ak.num(mva_cands["vertex_x"]))) == 0:
         return None
 
     # MVA feature extraction — directly from candidates, no DataFrame
@@ -274,11 +297,7 @@ def pvtag_events(events, model_path, mva_cut):
         np.isin(pv_ei * stride + flat_pv_idx, tagged_keys), pvs_per_event
     )
 
-    return {
-        **events,
-        "tracks": apply_mask(tracks, track_mask),
-        "pvs": apply_mask(pvs, pv_mask),
-    }
+    return apply_mask(tracks, track_mask), apply_mask(pvs, pv_mask)
 
 
 def main():
@@ -288,12 +307,14 @@ def main():
         required=True,
         choices=["cheated", "full", "full_notime", "dist"],
     )
-    parser.add_argument("--input", required=True, help="ROOT file path")
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple")
-    parser.add_argument("--max-events", type=int, default=1000)
-    parser.add_argument("--slice-size", type=int, default=1000)
     parser.add_argument(
-        "--out-dir", default="public/1p5e34/reconstruction/bs_to_mumu"
+        "--input", required=True, help="ROOT file path (wildcards allowed)"
+    )
+    parser.add_argument("--max-events", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--out-dir", default="public/bs_to_mumu/reconstruction"
     )
     parser.add_argument(
         "--out-file", default=None, help="Override output file path"
@@ -313,9 +334,6 @@ def main():
     if args.pvtag and not args.model:
         parser.error("--model is required when using --pvtag")
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     if args.mode == "cheated":
         reco_fn = cheated_reconstruction
     else:
@@ -325,26 +343,24 @@ def main():
         reco_fn = reconstruction
 
     if args.pvtag:
-        reco_fn = with_pvtag(reco_fn, args.model, args.mva_cut)
-
-    results = run_reconstruction(
-        reco_fn,
-        input_data=args.input,
-        tree_name=args.tree,
-        max_events=args.max_events,
-        slice_size=args.slice_size,
-        print_throughput=True,
-    )
-
-    dfs = [r for r in (results or []) if r is not None]
-    df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+        reco_fn = with_pvtag(args.mode, args.model, args.mva_cut)
 
     label = f"{args.mode}_pvtag" if args.pvtag else args.mode
     out_path = (
-        Path(args.out_file) if args.out_file else out_dir / f"{label}.parquet"
+        Path(args.out_file)
+        if args.out_file
+        else Path(args.out_dir) / f"{label}.parquet"
     )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(out_path, index=False)
+
+    run_reconstruction(
+        reco_fn,
+        input_data=args.input,
+        out=out_path,
+        max_events=args.max_events,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
+        print_throughput=True,
+    )
 
     print(f"\nMode: {label}")
     print(f"Saved to {out_path}")

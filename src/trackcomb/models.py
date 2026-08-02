@@ -28,7 +28,7 @@ def n_daughters(candidates: Container) -> int:
 
 def get_daughter(candidates: Container, k: int, field: str):
     """Look up a daughter field via global_index into the pool."""
-    cache_key = f"cached_daughter{k}_{field}"
+    cache_key = f"_cached_daughter{k}_{field}"
     if cache_key in candidates:
         return candidates[cache_key]
 
@@ -36,10 +36,18 @@ def get_daughter(candidates: Container, k: int, field: str):
     global_idx = candidates[f"daughter{k}_global_index"]
     # Flatten the event axis of the pool → one entry per track, then index
     flat_pool = ak.flatten(pool[field])
-    result = flat_pool[global_idx]
-    # Flat container + 1D field → convert to numpy for downstream compatibility
-    if isinstance(global_idx, np.ndarray) and flat_pool.ndim == 1:
-        result = np.asarray(result)
+    if isinstance(global_idx, np.ndarray):
+        result = flat_pool[global_idx]
+        # Flat container + 1D field → numpy for downstream compatibility
+        if flat_pool.ndim == 1:
+            result = np.asarray(result)
+    elif global_idx.ndim > 1:
+        # Jagged (unflattened) candidates: index flat, restore event axis
+        result = ak.unflatten(
+            flat_pool[ak.flatten(global_idx)], ak.num(global_idx)
+        )
+    else:
+        result = flat_pool[global_idx]
 
     candidates[cache_key] = result
     return result
@@ -171,6 +179,36 @@ def sum_in_tree(field: str) -> Callable[[Container], Any]:
             total = val if total is None else (total + val)
             k += 1
         return total
+
+    return _fn
+
+
+def min_in_tree(field: str) -> Callable[[Container], Any]:
+    """Minimum of a field across all daughters."""
+
+    def _fn(c):
+        best = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            val = get_daughter(c, k, field)
+            best = val if best is None else np.minimum(best, val)
+            k += 1
+        return best
+
+    return _fn
+
+
+def max_in_tree(field: str) -> Callable[[Container], Any]:
+    """Maximum of a field across all daughters."""
+
+    def _fn(c):
+        best = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            val = get_daughter(c, k, field)
+            best = val if best is None else np.maximum(best, val)
+            k += 1
+        return best
 
     return _fn
 

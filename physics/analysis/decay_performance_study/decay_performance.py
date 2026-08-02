@@ -180,6 +180,25 @@ def main():
         color="steelblue",
         label=f"All candidates ({len(sel)})",
     )
+    ax_m.hist(
+        found["mass"].values,
+        bins=50,
+        range=ch["mass_range"],
+        histtype="stepfilled",
+        alpha=0.8,
+        color="darkorange",
+        label=f"Signal ({len(found)})",
+    )
+    ax_m.hist(
+        reco["mass"].values,
+        bins=50,
+        range=ch["mass_range"],
+        histtype="step",
+        color="black",
+        linestyle="--",
+        linewidth=1.5,
+        label=f"Cheated ({len(reco)})",
+    )
     ax_m.axvline(
         ch["pdg_mass"],
         color="red",
@@ -194,6 +213,52 @@ def main():
     fig_m.tight_layout()
     fig_m.savefig(out_dir / f"{prefix}_mass.png", dpi=150)
     print(f"Saved {out_dir / f'{prefix}_mass.png'}")
+
+    # ---- Mass resolution reference (channel-specific) ----
+    ref = ch.get("resolution_reference")
+    if ref and ref["column"] in reco.columns:
+        fig_r, ax_r = make_figure(figsize=(16, 12))
+
+        def _half68(x):
+            x = x[np.isfinite(x)]
+            return 0.5 * (np.percentile(x, 84) - np.percentile(x, 16))
+
+        m_reco = reco["mass"].values
+        m_ref = reco[ref["column"]].values
+        ax_r.hist(
+            m_reco,
+            bins=50,
+            range=ch["mass_range"],
+            histtype="stepfilled",
+            alpha=0.6,
+            color="steelblue",
+            label=f"Cheated, reco ($\\sigma_{{68}}$ = {_half68(m_reco):.0f} MeV)",
+        )
+        ax_r.hist(
+            m_ref[np.isfinite(m_ref)],
+            bins=50,
+            range=ch["mass_range"],
+            histtype="stepfilled",
+            alpha=0.6,
+            color="darkorange",
+            label=f"{ref['label']} ($\\sigma_{{68}}$ = {_half68(m_ref):.0f} MeV)",
+        )
+        ax_r.axvline(
+            ch["pdg_mass"],
+            color="red",
+            linestyle="--",
+            linewidth=1,
+            label="PDG mass",
+        )
+        ax_r.set_xlabel(f"${ch['mass_latex']}$ [MeV]")
+        ax_r.set_ylabel("Candidates")
+        ax_r.set_title(
+            f"${ch['decay_latex']}$ mass resolution{title_suffix}{lumi_tag}"
+        )
+        ax_r.legend()
+        fig_r.tight_layout()
+        fig_r.savefig(out_dir / f"{prefix}_mass_resolution.png", dpi=150)
+        print(f"Saved {out_dir / f'{prefix}_mass_resolution.png'}")
 
     # ---- Intermediate resonance mass distributions ----
     for inter in ch.get("intermediates", []):

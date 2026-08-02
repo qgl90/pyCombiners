@@ -24,76 +24,36 @@ pyCombiners/
 ├── physics/
 │   ├── reconstruction/         # Reconstruction scripts (one per decay channel)
 │   └── analysis/               # Analysis/plotting scripts (organized by study type)
-├── workflow/
-│   ├── reconstruction.smk      # Snakemake rules for reconstruction
-│   └── analysis/               # Snakemake rules for each analysis study
+├── workflow/                   # One snakefile per pipeline (--snakefile workflow/<name>.smk)
 ├── tests/                      # pytest test suite
 ├── models/                     # ONNX MVA model files
 ├── scripts/                    # Utility scripts (ONNX conversion, fixture generation, ...)
-├── Snakefile                   # Top-level Snakemake entry point
-├── config.yaml                 # Pipeline configuration (luminosities, channels, modes)
+├── config/                     # One yaml per pipeline (inputs, event counts)
 └── environment.yaml            # Conda environment definition
 ```
 
 ## Input Format
 
 The design philosophy of this project is "KISS", keep it simple and stupid. Our reconstruction
-data is dumped in a big TTree/RNTuple where all information is stored in a SoA format without
-introducing new C++ struct or anything like that. Each entry of the TTree corresponds to an
-event, and each property is stored in `std::vector<T>`, so instead of
+data is dumped in one `EventTuple` TTree per file, where all information is stored in a SoA
+format without introducing new C++ structs. Each entry corresponds to an event, each property is
+a `std::vector<T>` branch, and branches are organized in two-level `Group/leaf` names:
 
-```cpp
-struct Track { float x, y, z, ...; };
-std::vector<Track> tracks;
+```
+BestLongState_FirstMeasurement/{x, y, z, tx, ty, qop, cov_i_j, ...}
+BestLongMC/{pid, key, pv_key, fromSignal, ancestor_pids, n_ancestors, ...}
+BestLongRich/{DLL_Muon, DLL_Kaon, ..., hasRICHInfo}
+BestLongTVHits/{n, id, x, y, z, t}          # per-hit lists, sized by n
+PVState/..., PVMC/..., EventInfo/...
+ReconstructibleTracks/..., PicoCalClusters*/...
 ```
 
-We have
+Multi-level information (hits per track, ancestors per track) uses a flat vector + size vector,
+recovered with `ak.unflatten`. The component loaders handle all of this.
 
-```cpp
-std::vector<float> tracks_x, tracks_y, tracks_z, ...
-```
-
-For multi-level information like
-
-```cpp
-struct Hit { float x, y, z; };
-struct Track { std::vector<Hit> hits; };
-std::vector<Track> tracks;
-```
-
-we use a flatten vector + size vector to store it
-
-```cpp
-std::vector<int>   tracks_hits_n; // size vector, number of hits in each track
-std::vector<float> tracks_hits_x, tracks_hits_y, tracks_hits_z, ...
-```
-
-The advantage of this design is it's very easy to load such data with uproot, awkward array fits
-very well with this design. Data will be loaded as a big dict:
-
-```python
-data["tracks_x"]      # array of floats
-data["tracks_y"]      # array of floats
-...
-data["tracks_hits_x"] # flat array of floats
-data["tracks_hits_n"] # size array
-```
-
-The multi-level information can be recovered easily:
-
-```python
-data["tracks_hits_x"] = ak.unflatten(data["tracks_hits_x"], data["tracks_hits_n"])
-```
-
-In the end we have:
-
-```python
-{
-    "tracks_x": [trackA.x, trackB.x, ...],
-    ...
-    "tracks_hits_x": [[trackA.hits[0].x, trackA.hits[1].x, ...], [trackB.hits[0].x, ...], ...],
-}
-```
+**Important**: leaf basenames repeat across groups (`x` appears in many groups), so branches
+must be read by their **full path** (`tree["BestLongTVHits/x"]`). Never use uproot
+`filter_name`/wildcard reads on this format — same-named leaves get silently merged.
 
 ## Units
 
@@ -113,7 +73,7 @@ be to associate best PV to each track:
 
 ```python
 tracks = load_tracks_from_event(...)
-pvs    = load_pvs(...)
+pvs = load_pvs(...)
 
 selected_pvs = select_pvs(pvs)
 tracks_pv_association(tracks, selected_pvs)
@@ -135,9 +95,9 @@ framework. Just use the built-in cut helpers:
 from trackcomb import cut_min, cut_max, cut_range
 
 my_cuts = [
-    cut_min("pt", 500),           # pt >= 500 MeV
-    cut_max("min_ip_chi2", 16),   # IP chi2 <= 16
-    cut_range("mass", 470, 520)   # mass in [470, 520] MeV
+    cut_min("pt", 500),  # pt >= 500 MeV
+    cut_max("min_ip_chi2", 16),  # IP chi2 <= 16
+    cut_range("mass", 470, 520),  # mass in [470, 520] MeV
 ]
 ```
 
@@ -147,7 +107,7 @@ Or just use a lambda for anything more complex:
 my_cuts = [
     cut_min("pt", 500),
     lambda c: c["daughter0_pt"] + c["daughter1_pt"] > 1000,  # sum pt cut
-    lambda c: c["mass"] - 498 < 20,                          # asymmetric mass window
+    lambda c: c["mass"] - 498 < 20,  # asymmetric mass window
 ]
 ```
 
@@ -164,37 +124,55 @@ A typical reconstruction script looks like this:
 
 ```python
 from trackcomb import (
-    load_events_root, set_tracks_pid, apply_mask,
-    tracks_pv_association, combine,
-    cut_min, cut_max, cut_range,
-    candidates_to_dataframe, pdg_id,
+    event_stream,
+    load_tracks,
+    load_pvs,
+    load_event_info,
+    set_tracks_pid,
+    apply_mask,
+    tracks_pv_association,
+    combine,
+    cut_min,
+    cut_max,
+    cut_range,
+    candidates_to_dataframe,
+    set_composite_pid,
 )
 
-# Load data
-tracks, pvs, info = load_events_root("input/ntuple_bsmumu_1p5e34_1000evts.root")
+for chunk in event_stream("input/1p0E34_Bs_mumu/*.root", chunk_size=100):
+    # Load only what you need (hits/rich/mc are switchable kwargs)
+    tracks = load_tracks(chunk)  # hits=("TVHits",), rich=True, mc=True
+    pvs = load_pvs(chunk)
+    info = load_event_info(chunk)
 
-# Track-PV association
-tracks_pv_association(tracks, pvs)
+    # Track-PV association, mass hypothesis
+    tracks_pv_association(tracks, pvs)
+    set_tracks_pid(tracks, "mu+")
+    pos = apply_mask(tracks, tracks["charge"] > 0)
+    neg = apply_mask(tracks, tracks["charge"] < 0)
 
-# Split tracks by charge and assign mass hypothesis
-pos = apply_mask(tracks, tracks["charge"] > 0)
-neg = apply_mask(tracks, tracks["charge"] < 0)
-set_tracks_pid(pos, "mu+")
-set_tracks_pid(neg, "mu+")
-
-# Combine
-candidates = combine(
-    [pos, neg], pvs,
-    track_cuts=[cut_min("pt", 500), cut_min("min_ip", 0.05)],
-    combination_cuts=[cut_max("max_doca", 0.2), cut_min("dira", 0.9995)],
-    vertex_cuts=[cut_range("mass", 5000, 5800), cut_min("pt", 1000)],
-)
-candidates["pid"] = pdg_id("B(s)0")
-
-# Export to parquet (includes all daughter fields, recursive for multi-level decays)
-df = candidates_to_dataframe(candidates)
-df.to_parquet("bs_candidates.parquet")
+    # Combine
+    candidates = combine(
+        [pos, neg],
+        pvs,
+        track_cuts=[cut_min("pt", 1000), cut_min("rich_dll_muon", -5)],
+        combination_cuts=[
+            cut_max("max_doca", 0.05),
+            cut_range("mass", 4700, 6000),
+        ],
+        composite_cuts=[cut_max("vertex_chi2", 4)],
+        final_cuts=[cut_min("dira", 0.9995)],
+    )
+    if candidates is None:
+        continue
+    set_composite_pid(candidates, "B(s)0")
+    df = candidates_to_dataframe(candidates)
+    ...
 ```
+
+For production use, wrap the per-chunk logic in a function and let
+`run_reconstruction(fn, input_path, out="bs.parquet")` drive the loop — it streams results
+into a single Parquet file with constant memory, handles wildcards and skips corrupt files.
 
 The output candidates are also Dicts, with track-compatible fields (`x`, `y`, `z`, `tx`, `ty`,
 `p`, `charge`, `time`, `track_id`, covariance). This means candidates can be fed back into
@@ -223,57 +201,79 @@ pip install -e .
 
 ## Input Data
 
-Input ntuples are not tracked in git. You need to set up the `input/` directory yourself.
-
-The easiest way is to symlink to the EOS storage:
+Input ntuples are not tracked in git. The current samples live at
+`/shared/jzhuo/run5/renato_test_middle-scenario-June2026-RichV3/<sample>/*.root`
+(EventTuple format, 100 events per file). Small local subsets can be merged into
+`input/` with hadd:
 
 ```bash
-ln -s /eos/lhcb/user/j/jzhuo/pyCombiners/input ./input
+hadd input/eventtuple_bsmumu_1p0e34_1000evts.root \
+     $(ls /shared/.../1p0E34_Bs_mumu/*.root | head -10)
 ```
 
-Alternatively, you can customize `config.yaml` to point input paths to wherever your data lives.
-The config file defines the full run matrix: luminosity points (`1p5e34`, `1p3e34`, `1p0e34`,
-`run3`), channels (`ks_to_pipi`, `bs_to_mumu`, `track_pv_association`, `two_track_mva`,
-`bs_to_mumu_pvtag`), and modes (`cheated`, `full`, `dist`, ...). Each channel entry has an
-`input` field pointing to the ROOT ntuple:
+## Running the Pipelines
+
+Each pipeline is a standalone snakefile under `workflow/` with its own config
+under `config/` — flat keys, no coupling between pipelines:
 
 ```yaml
-luminosities:
-  1p5e34:
-    channels:
-      bs_to_mumu:
-        input: input/ntuple_bsmumu_1p5e34_1000evts.root
-        modes:
-          full:
-            max_events: 1000
+# config/bs_to_mumu.yaml
+output_dir: public/bs_to_mumu
+input: input/eventtuple_bsmumu_1p0e34_1000evts.root
+max_events_full: 1000
 ```
 
-## Running the Pipeline
+Each pipeline owns its output directory: parquets go to
+`<output_dir>/reconstruction/` and plots to `<output_dir>/analysis/`
+(one sub-directory per study when a pipeline has several). Overriding
+`output_dir` relocates the whole tree.
+
+Input paths may contain wildcards — corrupt files are skipped with a warning.
+The committed configs are the default mode of each pipeline; anything else
+(quick tests, other samples/luminosities) is a command-line override or a
+private yaml:
+
+The five pipelines are `bs_to_phigamma`, `calo_study`, `bs_to_mumu`,
+`ks_to_pipi` and `bs_to_jpsiphi`:
 
 ```bash
-# Run the entire pipeline
-snakemake -j4
-
-# Run only reconstruction
-snakemake all_reconstruction -j4
-
-# Run a specific target
-snakemake public/dev/1p5e34/reconstruction/bs_to_mumu/full.parquet -j1
+snakemake --snakefile workflow/bs_to_phigamma.smk -c16
+snakemake --snakefile workflow/calo_study.smk -c16
+snakemake --snakefile workflow/bs_to_mumu.smk -c8
 
 # Dry-run to check the DAG
-snakemake -n
+snakemake --snakefile workflow/bs_to_phigamma.smk -n
+
+# Quick test: cap events, redirect output
+snakemake --snakefile workflow/bs_to_phigamma.smk -c8 \
+    --config max_events=1000 output_dir=public/test
+
+# Big/custom job: bring your own config (e.g. another luminosity)
+snakemake --snakefile workflow/bs_to_mumu.smk -c16 --configfile my_1p5e34.yaml
 ```
 
-You can also run reconstruction scripts directly:
+Reconstruction rules take all cores of the invocation (`--workers` = snakemake
+`threads`); analysis rules are single-core so snakemake runs them in parallel.
+
+You can also run reconstruction scripts directly (wildcards allowed in --input):
 
 ```bash
 PYTHONPATH=src python3 physics/reconstruction/bs_to_mumu.py \
     --mode full \
-    --input input/ntuple_bsmumu_1p5e34_1000evts.root \
-    --tree BestLongTracks/TrackTuple \
+    --input input/eventtuple_bsmumu_1p0e34_1000evts.root \
     --max-events 1000 \
     --out-dir output/
 ```
+
+## Continuous Integration
+
+Besides formatting and unit tests (shared runners), every merge request runs
+all five pipelines as 1k-event smoke jobs on a dedicated shell runner
+(tag `pyCombiner-cpu`). The jobs use `--configfile ci/<pipeline>.yaml` to
+point at local copies of the inputs under `/data/ci/input/` on the runner VM;
+`ci/ensure_env.sh` rebuilds the micromamba env whenever `environment.yaml`
+changes. The `analysis/` plots and all logs are kept as job artifacts —
+7 days for merge requests, forever on `main`.
 
 ## Plotting
 

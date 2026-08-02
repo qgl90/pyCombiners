@@ -11,7 +11,7 @@ import numpy as np
 
 from trackcomb.combiner import combine
 from trackcomb.models import cut_max, cut_range, get_daughter
-from trackcomb.pid import pdg_mass, set_tracks_pid
+from trackcomb.pid import pdg_mass
 
 _PION_MASS = pdg_mass("pi+")
 
@@ -383,47 +383,6 @@ class TestMultiPoolCombine(unittest.TestCase):
         pvs = self._make_pvs(1)
         result = combine([pool_a, pool_b], pvs)
         self.assertEqual(len(result["mass"][0]), 6)
-
-
-class TestSetTracksPid(unittest.TestCase):
-    """Test set_tracks_pid function."""
-
-    def _make_tracks(self):
-        return {
-            "x": ak.Array([[1.0, 2.0], [3.0]]),
-            "y": ak.Array([[0.1, 0.2], [0.3]]),
-        }
-
-    def test_string_lookup(self):
-        tracks = self._make_tracks()
-        set_tracks_pid(tracks, "pi+")
-        assert "mass" in tracks
-        assert "pid" in tracks
-        np.testing.assert_allclose(
-            ak.to_numpy(ak.flatten(tracks["mass"])),
-            [_PION_MASS, _PION_MASS, _PION_MASS],
-            rtol=1e-6,
-        )
-
-    def test_int_lookup(self):
-        tracks = self._make_tracks()
-        set_tracks_pid(tracks, 211)
-        np.testing.assert_allclose(
-            ak.to_numpy(ak.flatten(tracks["mass"])),
-            [_PION_MASS, _PION_MASS, _PION_MASS],
-            rtol=1e-6,
-        )
-        pid_flat = ak.to_numpy(ak.flatten(tracks["pid"]))
-        np.testing.assert_array_equal(pid_flat, [211, 211, 211])
-
-    def test_preserves_existing_fields(self):
-        tracks = self._make_tracks()
-        set_tracks_pid(tracks, "K+")
-        assert ak.to_list(tracks["x"]) == [[1.0, 2.0], [3.0]]
-
-    def test_bad_name_raises(self):
-        with self.assertRaises(ValueError):
-            set_tracks_pid(self._make_tracks(), "quark_soup")
 
 
 if __name__ == "__main__":

@@ -10,14 +10,22 @@ import awkward as ak
 import numpy as np
 import pandas as pd
 
-from trackcomb import counters, run_reconstruction, set_tracks_pid
+from trackcomb import (
+    counters,
+    load_event_info,
+    load_pvs,
+    load_tracks,
+    run_reconstruction,
+    set_tracks_pid,
+)
 from trackcomb.physics import compute_track_pv_pairs
 
 
-def reconstruction(events):
-    """Compute track-to-PV association stats for one slice."""
-    tracks, pvs = events["tracks"], events["pvs"]
-    event_info = {k: events[k] for k in ("run_number", "event_number")}
+def reconstruction(chunk):
+    """Compute track-to-PV association stats for one chunk."""
+    tracks = load_tracks(chunk)
+    pvs = load_pvs(chunk)
+    event_info = load_event_info(chunk)
 
     pv_mc_keys = pvs["mc_key"]
 
@@ -97,32 +105,30 @@ def main():
     parser = argparse.ArgumentParser(
         description="Track-to-PV association reconstruction (save stats to Parquet)",
     )
-    parser.add_argument("--input", required=True, help="ROOT file path")
-    parser.add_argument("--tree", default="BestLongTracks/TrackTuple")
+    parser.add_argument(
+        "--input", required=True, help="ROOT file path (wildcards allowed)"
+    )
     parser.add_argument("--max-events", type=int, default=200)
-    parser.add_argument("--slice-size", type=int, default=1000)
+    parser.add_argument("--chunk-size", type=int, default=100)
+    parser.add_argument("--workers", type=int, default=1)
     parser.add_argument(
         "--out-dir",
-        default="public/1p5e34/reconstruction/track_pv_association",
+        default="public/bs_to_mumu/reconstruction",
     )
     args = parser.parse_args()
     args.max_events = args.max_events or None
 
     out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
 
-    results = run_reconstruction(
+    run_reconstruction(
         reconstruction,
         input_data=args.input,
-        tree_name=args.tree,
+        out=out_dir / "pv_assoc.parquet",
         max_events=args.max_events,
-        slice_size=args.slice_size,
+        chunk_size=args.chunk_size,
+        workers=args.workers,
         print_throughput=True,
     )
-
-    dfs = [r for r in (results or []) if r is not None]
-    df = pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
-    df.to_parquet(out_dir / "pv_assoc.parquet", index=False)
 
     print(f"\nSaved to {out_dir}")
 

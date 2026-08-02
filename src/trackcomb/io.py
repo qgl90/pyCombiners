@@ -1,7 +1,15 @@
-"""I/O helpers: read ROOT into SoA containers, export to DataFrame."""
+"""I/O core: stream EventTuple files in chunks, read branches, export DataFrames.
+
+Reading rule (see .claude/IO_DESIGN.md): branches are read ONLY via their full
+path ("Group/leaf"). Never use filter_name/wildcard reads — leaf basenames
+repeat across groups and uproot silently merges same-named fields.
+"""
 
 from __future__ import annotations
 
+import functools
+import glob
+import warnings
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -10,187 +18,134 @@ import numpy as np
 import pandas as pd
 import uproot
 
-from .models import Container, COV5_LOWER_TRI, n_daughters
-from .configurable import configurable
-from .physics import compute_default_track_quantities
+from .models import Container, n_daughters
+from .counters import counters
+
+TREE_NAME = "EventTuple"
 
 
-def _to_float64(arr):
-    """Upcast awkward array to float64."""
-    return ak.values_astype(arr, "float64")
+@functools.lru_cache(maxsize=64)
+def _open_tree(path: str):
+    return uproot.open(f"{path}:{TREE_NAME}")
 
 
-def _unflatten_2d(flat_data, sizes):
-    """Reconstruct doubly-jagged array from flat data and sizes."""
-    flat_1d = ak.flatten(flat_data)
-    sizes_1d = ak.flatten(sizes)
-    per_element = ak.unflatten(flat_1d, sizes_1d)
-    return ak.unflatten(per_element, ak.num(sizes))
+def read(chunk: Container, branch: str):
+    """Read one branch (full path) for a chunk's entry range."""
+    tree = _open_tree(chunk["path"])
+    return tree[branch].array(
+        entry_start=chunk["entry_start"], entry_stop=chunk["entry_stop"]
+    )
 
 
-@configurable
-def make_tracks(
-    data,
-    hit_types=("TVHits",),
-    state_name="FirstMeasurement",
-    compute_track_quantities=compute_default_track_quantities,
-) -> Container:
-    """Build track container from uproot awkward arrays."""
+def read_float64(chunk: Container, branch: str):
+    """Read a branch and upcast to float64 (for fit numerics)."""
+    return ak.values_astype(read(chunk, branch), "float64")
 
-    tracks: Container = {}
-    _handled = set()
 
-    def _load_1d(branch):
-        _handled.add(branch)
-        return _to_float64(data[branch])
+def unflatten_2d(flat_data, sizes):
+    """Reconstruct doubly-jagged array from per-event flat data and sizes."""
+    per_object = ak.unflatten(ak.flatten(flat_data), ak.flatten(sizes))
+    return ak.unflatten(per_object, ak.num(sizes))
 
-    def _load_2d(branch, size_branch):
-        _handled.add(branch)
-        _handled.add(size_branch)
-        return _to_float64(_unflatten_2d(data[branch], data[size_branch]))
 
-    # Track state
-    for field in ("x", "y", "z", "tx", "ty", "qop"):
-        tracks[field] = _load_1d(f"{state_name}_{field}")
+def expand_files(path: str | Path) -> list[str]:
+    """Expand a path (may contain wildcards) to a sorted file list."""
+    pattern = str(path)
+    if any(c in pattern for c in "*?["):
+        files = sorted(glob.glob(pattern))
+    else:
+        files = [pattern]
+    if not files:
+        raise FileNotFoundError(f"no files match {path}")
+    return files
 
-    # State cov
-    for i, j in COV5_LOWER_TRI:
-        tracks[f"cov_{i}_{j}"] = _load_1d(f"{state_name}_cov_{i}_{j}")
 
-    # Hits
-    hit_info_map = {
-        "TVHits": ["x", "y", "z", "t"],
-        "UPHits": ["x", "y", "z"],
-        "FTHits": ["x", "z"],
-        "MPHits": ["x", "y", "z"],
-    }
-    for htype in hit_types:
-        assert htype in hit_info_map, f"{htype} is an invalid hit type"
-        for info in hit_info_map[htype]:
-            tracks[f"{htype}_{info}".lower()] = _load_2d(
-                f"{htype}_{info}", f"{htype}_n"
-            )
+def event_stream(
+    path: str | Path,
+    chunk_size: int = 100,
+    max_events: int | None = None,
+) -> Iterator[Container]:
+    """Yield picklable chunk cursors {path, entry_start, entry_stop}.
 
-    # MC truth
-    _mc_branches = [b for b in data.fields if b.startswith("MC_")]
-    if _mc_branches:
-        if "MC_ancestor_pids" in data.fields:
-            tracks["mc_ancestor_pids"] = _load_2d(
-                "MC_ancestor_pids", "MC_n_ancestors"
-            )
-
-        if "MC_ancestor_keys" in data.fields:
-            tracks["mc_ancestor_keys"] = _load_2d(
-                "MC_ancestor_keys", "MC_n_ancestors"
-            )
-
-        for branch in _mc_branches:
-            if branch in _handled:
-                continue
-            tracks[branch.lower()] = _load_1d(branch)
-
-    # Auto-add remaining Track_* branches
-    for branch in data.fields:
-        if branch in _handled or not branch.startswith("Track_"):
+    Unreadable files are skipped with a warning and counted in
+    counters("skipped corrupt files"). Chunks never span files, so a
+    trailing chunk may be smaller than chunk_size.
+    """
+    n_seen = 0
+    n_opened = 0
+    for file_path in expand_files(path):
+        try:
+            n_entries = _open_tree(file_path).num_entries
+        except Exception as exc:
+            warnings.warn(f"skipping unreadable file {file_path}: {exc}")
+            counters("skipped corrupt files").add(1)
             continue
-        field = branch[6:].lower()
-        if field not in tracks:
-            tracks[field] = data[branch]
+        n_opened += 1
+        start = 0
+        while start < n_entries:
+            stop = (
+                min(start + chunk_size, n_entries) if chunk_size else n_entries
+            )
+            if max_events is not None:
+                stop = min(stop, start + max_events - n_seen)
+            yield {
+                "path": file_path,
+                "entry_start": start,
+                "entry_stop": stop,
+            }
+            n_seen += stop - start
+            if max_events is not None and n_seen >= max_events:
+                return
+            start = stop
+    if n_opened == 0:
+        raise FileNotFoundError(f"no readable files match {path}")
 
-    # Metadata
-    tracks["_type"] = "tracks"
-    tracks["track_id"] = ak.local_index(tracks["x"], axis=1)
 
-    # Derive physics quantities
-    compute_track_quantities(tracks)
-
-    return tracks
-
-
-def make_pvs(data) -> Container:
-    """Build PV container from uproot awkward arrays."""
-    pvs: Container = {}
-
-    # Auto-load all PV_* branches, stripping prefix
-    for branch in data.fields:
-        if not branch.startswith("PV_"):
-            continue
-        field = branch[3:].lower()
-        pvs[field] = _to_float64(data[branch])
-
-    # PV_t → time (rename for consistency with tracks)
-    if "t" in pvs:
-        pvs["time"] = pvs.pop("t")
-
-    # sigma_time = sqrt(max(cov_3_3, 0))
-    if "cov_3_3" in pvs:
-        pvs["sigma_time"] = ak.where(
-            pvs["cov_3_3"] > 0.0,
-            pvs["cov_3_3"] ** 0.5,
-            0.0,
-        )
-
-    # Metadata
-    pvs["_type"] = "pvs"
-    pvs["pv_index"] = ak.local_index(pvs["x"], axis=1)
-
-    return pvs
+def n_chunk_events(chunk: Container) -> int:
+    return chunk["entry_stop"] - chunk["entry_start"]
 
 
 def load_events(
     path: str | Path,
-    tree_name: str = "BestLongTracks/TrackTuple",
     max_events: int | None = None,
+    **loader_kwargs,
 ) -> tuple[Container, Container, dict]:
-    """Load tracks and PVs from a ROOT file."""
-    tree = uproot.open(f"{path}:{tree_name}")
+    """One-shot convenience loader: (tracks, pvs, event_info).
 
-    entry_stop = max_events if max_events else None
-    data = tree.arrays(library="ak", entry_stop=entry_stop)
+    For notebooks and tests. Streams chunks internally and concatenates.
+    """
+    from .components.tracks import load_tracks
+    from .components.pvs import load_pvs
+    from .components.event_info import load_event_info
 
-    tracks = make_tracks(data)
-    pvs = make_pvs(data)
+    parts = []
+    for chunk in event_stream(path, chunk_size=0, max_events=max_events):
+        parts.append(
+            (
+                load_tracks(chunk, **loader_kwargs),
+                load_pvs(chunk),
+                load_event_info(chunk),
+            )
+        )
+    if len(parts) == 1:
+        return parts[0]
 
-    event_info = {
-        "run_number": ak.to_numpy(data["RunNumber"]).astype(np.int64),
-        "event_number": ak.to_numpy(data["EventNumber"]).astype(np.int64),
-    }
+    def _concat(containers):
+        out = dict(containers[0])
+        for key, val in out.items():
+            if key.startswith("_"):
+                continue
+            arrays = [c[key] for c in containers]
+            if isinstance(val, np.ndarray):
+                out[key] = np.concatenate(arrays)
+            else:
+                out[key] = ak.concatenate(arrays)
+        return out
 
-    return tracks, pvs, event_info
-
-
-def load_events_in_slices(
-    path: str | Path,
-    tree_name: str = "BestLongTracks/TrackTuple",
-    max_events: int | None = None,
-    slice_size: int = 100,
-) -> Iterator[tuple[Container, Container, dict]]:
-    """Yield (tracks, pvs, event_info) in slices from a ROOT file."""
-
-    if slice_size == 0 or (
-        max_events is not None and max_events <= slice_size
-    ):
-        yield load_events(path, tree_name, max_events)
-        return
-
-    tree = uproot.open(f"{path}:{tree_name}")
-
-    entry_stop = max_events if max_events else None
-
-    for chunk in tree.iterate(
-        library="ak",
-        step_size=slice_size,
-        entry_stop=entry_stop,
-    ):
-        tracks = make_tracks(chunk)
-        pvs = make_pvs(chunk)
-
-        event_info = {
-            "run_number": ak.to_numpy(chunk["RunNumber"]).astype(np.int64),
-            "event_number": ak.to_numpy(chunk["EventNumber"]).astype(np.int64),
-        }
-
-        yield tracks, pvs, event_info
+    tracks = _concat([p[0] for p in parts])
+    pvs = _concat([p[1] for p in parts])
+    info = {k: np.concatenate([p[2][k] for p in parts]) for k in parts[0][2]}
+    return tracks, pvs, info
 
 
 def candidates_to_dataframe(candidates: Container, _prefix="daughter") -> Any:

@@ -11,8 +11,9 @@ from trackcomb.combiner import combine
 from trackcomb.models import cut_max, cut_min, cut_range, get_daughter
 from trackcomb.pid import set_tracks_pid
 
-ROOT_FILE = Path(__file__).resolve().parent / "input" / "minbias_2evts.root"
-TREE = "BestLongTracks/TrackTuple"
+ROOT_FILE = (
+    Path(__file__).resolve().parent / "input" / "eventtuple_minbias_2evts.root"
+)
 MAX_EVENTS = 2
 
 
@@ -20,7 +21,7 @@ MAX_EVENTS = 2
 def _root_data():
     if not ROOT_FILE.exists():
         pytest.skip("ROOT test file not available")
-    return load_events(str(ROOT_FILE), TREE, max_events=MAX_EVENTS)
+    return load_events(str(ROOT_FILE), max_events=MAX_EVENTS)
 
 
 @pytest.fixture(scope="session")
