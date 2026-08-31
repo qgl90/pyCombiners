@@ -43,6 +43,9 @@ rule all:
         f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_p_{_LABEL}.png",
         f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_eta_{_LABEL}.png",
         f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_phi_{_LABEL}.png",
+        f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_p_{_LABEL}.pdf",
+        f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_eta_{_LABEL}.pdf",
+        f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_phi_{_LABEL}.pdf",
 
 
 rule pid_performance:
@@ -109,6 +112,18 @@ rule tracking_performance:
         resolution_phi=(
             f"{_TRACKING}/momentum_resolution/"
             f"deltap_over_p_vs_phi_{_LABEL}.png"
+        ),
+        fit_checks_p=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"gaussian_fit_checks_vs_p_{_LABEL}.pdf"
+        ),
+        fit_checks_eta=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"gaussian_fit_checks_vs_eta_{_LABEL}.pdf"
+        ),
+        fit_checks_phi=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"gaussian_fit_checks_vs_phi_{_LABEL}.pdf"
         ),
     log:
         f"{_RECO}/tracking_efficiency.log",

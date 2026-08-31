@@ -46,7 +46,9 @@ contains:
 - `momentum_resolution/deltap_over_p_vs_{p,eta,phi}_0p2e34.png`: Gaussian-core momentum
   resolution and bias;
 - `momentum_resolution/momentum_resolution_binned_0p2e34.parquet`: fitted means, widths,
-  uncertainties, and populations for every truth-kinematic bin.
+  uncertainties, fit ranges, status, and populations for every truth-kinematic bin;
+- `momentum_resolution/gaussian_fit_checks_vs_{p,eta,phi}_0p2e34.pdf`: multipage
+  per-bin residual histograms with the MAD seed window, final fit window, and Gaussian overlay.
 
 The main Parquet contains both `row_type == "reconstructible"` denominator rows and
 `row_type == "long"` reconstructed-track rows, so alternative analyses can be performed without
@@ -80,12 +82,19 @@ For every truth-matched reconstructed Long track, the signed residual is
 delta_p_over_p = (p_reco - p_true) / p_true
 ```
 
-Tracks are sliced in bins of true `p`, true `eta`, or true `phi`. In each bin, an unbinned
-Gaussian maximum-likelihood fit is performed on the residual core with iterative three-sigma
-clipping. The fitted Gaussian width is the momentum resolution and its mean is the momentum
-bias; both are reported in percent. The signed residual is required to measure bias, while the
-positive Gaussian width measures the magnitude of the resolution corresponding to
-`|p_reco-p_true|/p_true`.
+Tracks are sliced in bins of true `p`, true `eta`, or true `phi`. The suggested default fit range
+is obtained in two stages: seed the core with `median +/- 3 * 1.4826 * MAD`, then iteratively
+refit and retain `mean +/- 3 * sigma`. The final `mean +/- 3 * sigma` interval is stored as
+`fit_low_percent` and `fit_high_percent`; change both three-sigma selections with
+`--resolution-fit-sigma`. A bin is not fitted when fewer than `--min-resolution-entries`
+(default 20) remain in its robust core.
+
+The fitted Gaussian width is the momentum resolution and its mean is the momentum bias; both
+are reported in percent. The signed residual is required to measure bias, while the positive
+Gaussian width measures the magnitude of the resolution corresponding to
+`|p_reco-p_true|/p_true`. The diagnostic PDFs show every bin, including skipped bins, and annotate
+the total and fitted populations, fit status, mean, and width. This makes the chosen fit window
+and any non-Gaussian tails directly inspectable.
 
 ## Alternative truth tags
 

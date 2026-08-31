@@ -331,20 +331,47 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
     plt.close(fig)
 
 
-def _fit_gaussian_core(values, min_entries=20, clip_sigma=3.0, iterations=3):
-    """Fit a Gaussian core with iterative unbinned maximum likelihood."""
+def _gaussian_core_fit(values, min_entries=20, clip_sigma=3.0, iterations=3):
+    """Return a robust Gaussian-core fit and its auditable fit windows."""
     sample = np.asarray(values, dtype=float)
     sample = sample[np.isfinite(sample)]
-    if len(sample) < min_entries:
-        return len(sample), np.nan, np.nan, np.nan, np.nan
+    result = {
+        "n_fit": len(sample),
+        "mean": np.nan,
+        "sigma": np.nan,
+        "mean_error": np.nan,
+        "sigma_error": np.nan,
+        "seed_center": np.nan,
+        "seed_sigma": np.nan,
+        "seed_fit_low": np.nan,
+        "seed_fit_high": np.nan,
+        "fit_low": np.nan,
+        "fit_high": np.nan,
+        "core_fraction": np.nan,
+        "fit_status": "insufficient_entries",
+    }
+    if len(sample) == 0:
+        return result
+    result["core_fraction"] = 1.0
 
     median = float(np.median(sample))
     mad_sigma = 1.4826 * float(np.median(np.abs(sample - median)))
+    result.update(
+        seed_center=median,
+        seed_sigma=mad_sigma,
+        seed_fit_low=median - clip_sigma * mad_sigma,
+        seed_fit_high=median + clip_sigma * mad_sigma,
+    )
+    if len(sample) < min_entries:
+        return result
+
     if np.isfinite(mad_sigma) and mad_sigma > 0.0:
         core = np.abs(sample - median) <= clip_sigma * mad_sigma
         fitted = sample[core]
+        result["n_fit"] = len(fitted)
+        result["core_fraction"] = len(fitted) / len(sample)
         if len(fitted) < min_entries:
-            return len(fitted), np.nan, np.nan, np.nan, np.nan
+            return result
     else:
         fitted = sample
     for _ in range(iterations):
@@ -360,12 +387,35 @@ def _fit_gaussian_core(values, min_entries=20, clip_sigma=3.0, iterations=3):
     n_fit = len(fitted)
     mean = float(np.mean(fitted))
     sigma = float(np.std(fitted, ddof=0))
+    if not np.isfinite(sigma) or sigma <= 0.0:
+        result.update(n_fit=n_fit, fit_status="degenerate_core")
+        return result
     mean_error = sigma / np.sqrt(n_fit)
     sigma_error = sigma / np.sqrt(2.0 * max(n_fit - 1, 1))
-    return n_fit, mean, sigma, mean_error, sigma_error
+    result.update(
+        n_fit=n_fit,
+        mean=mean,
+        sigma=sigma,
+        mean_error=mean_error,
+        sigma_error=sigma_error,
+        fit_low=mean - clip_sigma * sigma,
+        fit_high=mean + clip_sigma * sigma,
+        core_fraction=n_fit / len(sample),
+        fit_status="fitted",
+    )
+    return result
 
 
-def _momentum_resolution_table(frame, min_entries=20):
+def _fit_gaussian_core(values, min_entries=20, clip_sigma=3.0, iterations=3):
+    """Fit a Gaussian core with iterative unbinned maximum likelihood."""
+    fit = _gaussian_core_fit(values, min_entries, clip_sigma, iterations)
+    return tuple(
+        fit[field]
+        for field in ("n_fit", "mean", "sigma", "mean_error", "sigma_error")
+    )
+
+
+def _momentum_resolution_table(frame, min_entries=20, clip_sigma=3.0):
     """Fit momentum residual Gaussian cores in true p, eta, and phi bins."""
     tracks = frame[
         (frame["row_type"] == "long")
@@ -391,8 +441,10 @@ def _momentum_resolution_table(frame, min_entries=20):
             in_bin = (values >= low) & (
                 (values <= high) if index == len(bins) - 2 else (values < high)
             )
-            n_fit, mean, sigma, mean_error, sigma_error = _fit_gaussian_core(
-                residual[in_bin], min_entries=min_entries
+            fit = _gaussian_core_fit(
+                residual[in_bin],
+                min_entries=min_entries,
+                clip_sigma=clip_sigma,
             )
             rows.append(
                 {
@@ -400,11 +452,22 @@ def _momentum_resolution_table(frame, min_entries=20):
                     "bin_low": low * scale,
                     "bin_high": high * scale,
                     "n_tracks": int(in_bin.sum()),
-                    "n_fit": n_fit,
-                    "bias_percent": 100.0 * mean,
-                    "bias_uncertainty_percent": 100.0 * mean_error,
-                    "resolution_percent": 100.0 * sigma,
-                    "resolution_uncertainty_percent": 100.0 * sigma_error,
+                    "n_fit": fit["n_fit"],
+                    "n_rejected": int(in_bin.sum()) - fit["n_fit"],
+                    "core_fraction": fit["core_fraction"],
+                    "fit_status": fit["fit_status"],
+                    "clip_sigma": clip_sigma,
+                    "seed_center_percent": 100.0 * fit["seed_center"],
+                    "seed_sigma_percent": 100.0 * fit["seed_sigma"],
+                    "seed_fit_low_percent": 100.0 * fit["seed_fit_low"],
+                    "seed_fit_high_percent": 100.0 * fit["seed_fit_high"],
+                    "fit_low_percent": 100.0 * fit["fit_low"],
+                    "fit_high_percent": 100.0 * fit["fit_high"],
+                    "bias_percent": 100.0 * fit["mean"],
+                    "bias_uncertainty_percent": 100.0 * fit["mean_error"],
+                    "resolution_percent": 100.0 * fit["sigma"],
+                    "resolution_uncertainty_percent": 100.0
+                    * fit["sigma_error"],
                 }
             )
     return pd.DataFrame(rows)
@@ -457,12 +520,172 @@ def _plot_momentum_resolution(table, variable, output, label):
     plt.close(fig)
 
 
+def _plot_gaussian_fit_summary(frame, table, variable, output, label):
+    """Write a multipage residual-and-fit diagnostic for every kinematic bin."""
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+
+    field, scale = {
+        "p": ("truth_p", 1e-3),
+        "eta": ("truth_eta", 1.0),
+        "phi": ("truth_phi", 1.0),
+    }[variable]
+    tracks = frame[
+        (frame["row_type"] == "long")
+        & frame["truth_matched"]
+        & np.isfinite(frame["truth_p"])
+        & np.isfinite(frame["reco_p"])
+        & (frame["truth_p"] > 0.0)
+    ]
+    values = tracks[field].to_numpy(dtype=float) * scale
+    residual = (
+        100.0
+        * (tracks["reco_p"].to_numpy() - tracks["truth_p"].to_numpy())
+        / tracks["truth_p"].to_numpy()
+    )
+    points = table[table["variable"] == variable].reset_index(drop=True)
+
+    with PdfPages(output) as pdf:
+        for page_start in range(0, len(points), 9):
+            fig, axes = plt.subplots(3, 3, figsize=(15, 12))
+            for axis, (_, point) in zip(
+                axes.flat, points.iloc[page_start : page_start + 9].iterrows()
+            ):
+                last_bin = point.name == len(points) - 1
+                selected = (values >= point["bin_low"]) & (
+                    (values <= point["bin_high"])
+                    if last_bin
+                    else (values < point["bin_high"])
+                )
+                sample = residual[selected & np.isfinite(residual)]
+                finite_limits = np.asarray(
+                    [
+                        point["seed_fit_low_percent"],
+                        point["seed_fit_high_percent"],
+                        point["fit_low_percent"],
+                        point["fit_high_percent"],
+                    ]
+                )
+                finite_limits = finite_limits[np.isfinite(finite_limits)]
+                if len(finite_limits) >= 2:
+                    low, high = finite_limits.min(), finite_limits.max()
+                elif len(sample) >= 2:
+                    low, high = np.quantile(sample, [0.05, 0.95])
+                elif len(sample) == 1:
+                    low, high = sample[0] - 1.0, sample[0] + 1.0
+                else:
+                    low, high = -1.0, 1.0
+                span = max(high - low, 1e-6)
+                display_low, display_high = (
+                    low - 0.15 * span,
+                    high + 0.15 * span,
+                )
+                visible = sample[
+                    (sample >= display_low) & (sample <= display_high)
+                ]
+                n_hist_bins = min(30, max(8, int(2.0 * np.sqrt(len(visible)))))
+                _, edges, _ = axis.hist(
+                    visible,
+                    bins=n_hist_bins,
+                    range=(display_low, display_high),
+                    histtype="step",
+                    color="black",
+                    label="all tracks in display range",
+                )
+                if np.isfinite(point["seed_fit_low_percent"]):
+                    axis.axvline(
+                        point["seed_fit_low_percent"],
+                        color="0.55",
+                        linestyle="--",
+                        linewidth=1,
+                    )
+                    axis.axvline(
+                        point["seed_fit_high_percent"],
+                        color="0.55",
+                        linestyle="--",
+                        linewidth=1,
+                        label="MAD seed range",
+                    )
+                if point["fit_status"] == "fitted":
+                    fit_low = point["fit_low_percent"]
+                    fit_high = point["fit_high_percent"]
+                    axis.axvspan(
+                        fit_low,
+                        fit_high,
+                        color="tab:blue",
+                        alpha=0.10,
+                        label="suggested final range",
+                    )
+                    x = np.linspace(fit_low, fit_high, 300)
+                    mean = point["bias_percent"]
+                    sigma = point["resolution_percent"]
+                    bin_width = edges[1] - edges[0]
+                    gaussian = (
+                        point["n_fit"]
+                        * bin_width
+                        * np.exp(-0.5 * ((x - mean) / sigma) ** 2)
+                        / (np.sqrt(2.0 * np.pi) * sigma)
+                    )
+                    axis.plot(
+                        x, gaussian, color="tab:red", label="Gaussian MLE"
+                    )
+                axis.set_title(
+                    f"{point['bin_low']:.3g} < true {variable} < "
+                    f"{point['bin_high']:.3g}",
+                    fontsize=11,
+                )
+                axis.set_xlabel(
+                    r"$(p_{reco}-p_{true})/p_{true}$ [%]", fontsize=9
+                )
+                axis.set_ylabel("Tracks", fontsize=9)
+                axis.tick_params(axis="both", labelsize=8)
+                axis.text(
+                    0.03,
+                    0.96,
+                    f"status: {point['fit_status']}\n"
+                    f"N={point['n_tracks']:.0f}, Nfit={point['n_fit']:.0f}\n"
+                    f"mu={point['bias_percent']:.3g}%\n"
+                    f"sigma={point['resolution_percent']:.3g}%",
+                    transform=axis.transAxes,
+                    va="top",
+                    fontsize=7,
+                )
+                axis.grid(True, alpha=0.2)
+            for axis in axes.flat[
+                len(points.iloc[page_start : page_start + 9]) :
+            ]:
+                axis.set_visible(False)
+            legend_items = {}
+            for axis in axes.flat:
+                handles, legend_labels = axis.get_legend_handles_labels()
+                legend_items.update(zip(legend_labels, handles))
+            if legend_items:
+                fig.legend(
+                    legend_items.values(),
+                    legend_items.keys(),
+                    loc="upper center",
+                    bbox_to_anchor=(0.5, 0.965),
+                    ncol=4,
+                    fontsize=8,
+                )
+            fig.suptitle(
+                f"{label}: Gaussian-core checks versus true {variable}",
+                y=0.995,
+                fontsize=13,
+            )
+            fig.tight_layout(rect=(0, 0, 1, 0.91))
+            pdf.savefig(fig, bbox_inches=None)
+            plt.close(fig)
+
+
 def make_momentum_resolution_plots(
-    dataframe_path, plot_dir, label=None, min_entries=20
+    dataframe_path, plot_dir, label=None, min_entries=20, clip_sigma=3.0
 ):
     """Write Gaussian-fit momentum resolution and bias plots and table."""
     frame = pd.read_parquet(dataframe_path)
-    table = _momentum_resolution_table(frame, min_entries=min_entries)
+    table = _momentum_resolution_table(
+        frame, min_entries=min_entries, clip_sigma=clip_sigma
+    )
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
     label = label or _infer_label(dataframe_path)
@@ -475,6 +698,11 @@ def make_momentum_resolution_plots(
         output = plot_dir / f"deltap_over_p_vs_{variable}{suffix}.png"
         _plot_momentum_resolution(table, variable, output, label)
         print(f"Saved {output}")
+        diagnostic = (
+            plot_dir / f"gaussian_fit_checks_vs_{variable}{suffix}.pdf"
+        )
+        _plot_gaussian_fit_summary(frame, table, variable, diagnostic, label)
+        print(f"Saved {diagnostic}")
 
 
 def _infer_label(dataframe_path):
@@ -573,6 +801,12 @@ def main():
         default=20,
         help="minimum truth-matched tracks required for a Gaussian bin fit",
     )
+    parser.add_argument(
+        "--resolution-fit-sigma",
+        type=float,
+        default=3.0,
+        help="MAD seed and iterative Gaussian fit half-range in sigma",
+    )
     args = parser.parse_args()
 
     if args.list_tags:
@@ -627,6 +861,7 @@ def main():
         resolution_dir,
         args.label,
         args.min_resolution_entries,
+        args.resolution_fit_sigma,
     )
 
 

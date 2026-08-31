@@ -8,6 +8,7 @@ from tracking.compare_tracking_efficiencies import _integrated_summary
 from tracking.tracking_efficiencies import _set_track_type_tags
 from tracking.tracking_efficiencies import (
     _fit_gaussian_core,
+    _gaussian_core_fit,
     _momentum_resolution_table,
     _performance_tables,
 )
@@ -123,6 +124,16 @@ def test_momentum_resolution_uses_gaussian_mean_and_width():
     np.testing.assert_allclose(
         fitted_p["resolution_percent"], 100.0 * np.sqrt(2e-4)
     )
+    np.testing.assert_allclose(
+        fitted_p["fit_low_percent"],
+        -3.0 * fitted_p["resolution_percent"],
+    )
+    np.testing.assert_allclose(
+        fitted_p["fit_high_percent"],
+        3.0 * fitted_p["resolution_percent"],
+    )
+    assert fitted_p["fit_status"] == "fitted"
+    assert fitted_p["core_fraction"] == 1.0
 
 
 def test_momentum_resolution_does_not_fit_an_underpopulated_robust_core():
@@ -135,3 +146,8 @@ def test_momentum_resolution_does_not_fit_an_underpopulated_robust_core():
     assert all(
         np.isnan(value) for value in (mean, sigma, mean_error, sigma_error)
     )
+    details = _gaussian_core_fit(residual, min_entries=20)
+    assert details["fit_status"] == "insufficient_entries"
+    assert details["core_fraction"] == 19 / 20
+    assert np.isfinite(details["seed_fit_low"])
+    assert np.isfinite(details["seed_fit_high"])
