@@ -39,6 +39,10 @@ rule all:
             f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_{_LABEL}.png",
             track_type=_TRACK_TYPES,
         ),
+        f"{_TRACKING}/momentum_resolution/momentum_resolution_binned_{_LABEL}.parquet",
+        f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_p_{_LABEL}.png",
+        f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_eta_{_LABEL}.png",
+        f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_phi_{_LABEL}.png",
 
 
 rule pid_performance:
@@ -89,6 +93,22 @@ rule tracking_performance:
         ghost=expand(
             f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_{_LABEL}.png",
             track_type=_TRACK_TYPES,
+        ),
+        resolution_table=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"momentum_resolution_binned_{_LABEL}.parquet"
+        ),
+        resolution_p=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"deltap_over_p_vs_p_{_LABEL}.png"
+        ),
+        resolution_eta=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"deltap_over_p_vs_eta_{_LABEL}.png"
+        ),
+        resolution_phi=(
+            f"{_TRACKING}/momentum_resolution/"
+            f"deltap_over_p_vs_phi_{_LABEL}.png"
         ),
     log:
         f"{_RECO}/tracking_efficiency.log",

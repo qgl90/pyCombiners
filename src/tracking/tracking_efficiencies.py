@@ -34,6 +34,13 @@ TRACK_TYPES = {
     "longmp": ("has_velo", "has_mp"),
 }
 
+KINEMATIC_LABELS = {
+    "pt": r"$p_T$ [GeV]",
+    "eta": r"$\eta$",
+    "p": r"$p$ [GeV]",
+    "phi": r"$\phi$ [rad]",
+}
+
 
 def _flat(values):
     return np.asarray(ak.flatten(values))
@@ -49,6 +56,7 @@ def _compute_track_kinematics(tracks):
     dz = 1.0 / norm
     tracks["pt"] = tracks["p"] * np.sqrt(tx**2 + ty**2) / norm
     tracks["eta"] = 0.5 * np.log((1.0 + dz) / np.maximum(1.0 - dz, 1e-30))
+    tracks["phi"] = np.arctan2(ty, tx)
     return tracks
 
 
@@ -89,6 +97,7 @@ def _reconstructible_frame(reconstructible, event_info):
             "reco_p": np.full(n_rows, np.nan),
             "reco_pt": np.full(n_rows, np.nan),
             "reco_eta": np.full(n_rows, np.nan),
+            "reco_phi": np.full(n_rows, np.nan),
             "reco_chi2ndof": np.full(n_rows, np.nan),
             "from_signal": _flat(reconstructible["from_signal"]),
             "has_velo": _flat(reconstructible["has_velo"]),
@@ -139,6 +148,7 @@ def _long_track_frame(tracks, event_info):
             "reco_p": _flat(tracks["p"]),
             "reco_pt": _flat(tracks["pt"]),
             "reco_eta": _flat(tracks["eta"]),
+            "reco_phi": _flat(tracks["phi"]),
             "reco_chi2ndof": _flat(tracks["chi2ndof"]),
             "from_signal": truth_matched & _flat(tracks["mc_fromsignal"]),
             "has_velo": truth_matched & _flat(tracks["mc_has_tv"]),
@@ -247,6 +257,12 @@ def _performance_tables(frame, track_type, tags):
             1000.0 * np.linspace(0, 100, 100),
             1e-3,
         ),
+        "phi": (
+            "truth_phi",
+            "reco_phi",
+            np.linspace(-np.pi, np.pi, 65),
+            1.0,
+        ),
     }
     rows = []
     for variable, (
@@ -291,9 +307,9 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
 
     from trackcomb.plot import make_figure
 
-    fig, axes = make_figure(1, 3, figsize=(21 * 1.5, 6 * 1.5))
-    labels = {"pt": r"$p_T$ [GeV]", "eta": r"$\eta$", "p": r"$p$ [GeV]"}
-    for axis, variable in zip(axes, ("pt", "eta", "p")):
+    variables = ("pt", "eta", "p", "phi")
+    fig, axes = make_figure(1, len(variables), figsize=(28, 6))
+    for axis, variable in zip(axes, variables):
         points = table[table["variable"] == variable]
         centers = 0.5 * (points["bin_low"] + points["bin_high"])
         widths = 0.5 * (points["bin_high"] - points["bin_low"])
@@ -305,7 +321,7 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
             fmt="o",
             capsize=2,
         )
-        axis.set_xlabel(labels[variable])
+        axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
         axis.set_ylim(0.0, 105.0)
         axis.grid(True, alpha=0.3)
@@ -313,6 +329,152 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
+
+
+def _fit_gaussian_core(values, min_entries=20, clip_sigma=3.0, iterations=3):
+    """Fit a Gaussian core with iterative unbinned maximum likelihood."""
+    sample = np.asarray(values, dtype=float)
+    sample = sample[np.isfinite(sample)]
+    if len(sample) < min_entries:
+        return len(sample), np.nan, np.nan, np.nan, np.nan
+
+    median = float(np.median(sample))
+    mad_sigma = 1.4826 * float(np.median(np.abs(sample - median)))
+    if np.isfinite(mad_sigma) and mad_sigma > 0.0:
+        core = np.abs(sample - median) <= clip_sigma * mad_sigma
+        fitted = sample[core]
+        if len(fitted) < min_entries:
+            return len(fitted), np.nan, np.nan, np.nan, np.nan
+    else:
+        fitted = sample
+    for _ in range(iterations):
+        mean = float(np.mean(fitted))
+        sigma = float(np.std(fitted, ddof=0))
+        if not np.isfinite(sigma) or sigma <= 0.0:
+            break
+        selected = np.abs(fitted - mean) <= clip_sigma * sigma
+        if selected.all() or int(selected.sum()) < min_entries:
+            break
+        fitted = fitted[selected]
+
+    n_fit = len(fitted)
+    mean = float(np.mean(fitted))
+    sigma = float(np.std(fitted, ddof=0))
+    mean_error = sigma / np.sqrt(n_fit)
+    sigma_error = sigma / np.sqrt(2.0 * max(n_fit - 1, 1))
+    return n_fit, mean, sigma, mean_error, sigma_error
+
+
+def _momentum_resolution_table(frame, min_entries=20):
+    """Fit momentum residual Gaussian cores in true p, eta, and phi bins."""
+    tracks = frame[
+        (frame["row_type"] == "long")
+        & frame["truth_matched"]
+        & np.isfinite(frame["truth_p"])
+        & np.isfinite(frame["reco_p"])
+        & (frame["truth_p"] > 0.0)
+    ].copy()
+    tracks["delta_p_over_p"] = (tracks["reco_p"] - tracks["truth_p"]) / tracks[
+        "truth_p"
+    ]
+
+    definitions = {
+        "p": ("truth_p", 1000.0 * np.linspace(0.0, 100.0, 26), 1e-3),
+        "eta": ("truth_eta", np.linspace(1.5, 5.5, 21), 1.0),
+        "phi": ("truth_phi", np.linspace(-np.pi, np.pi, 25), 1.0),
+    }
+    rows = []
+    for variable, (field, bins, scale) in definitions.items():
+        values = tracks[field].to_numpy(dtype=float)
+        residual = tracks["delta_p_over_p"].to_numpy(dtype=float)
+        for index, (low, high) in enumerate(zip(bins[:-1], bins[1:])):
+            in_bin = (values >= low) & (
+                (values <= high) if index == len(bins) - 2 else (values < high)
+            )
+            n_fit, mean, sigma, mean_error, sigma_error = _fit_gaussian_core(
+                residual[in_bin], min_entries=min_entries
+            )
+            rows.append(
+                {
+                    "variable": variable,
+                    "bin_low": low * scale,
+                    "bin_high": high * scale,
+                    "n_tracks": int(in_bin.sum()),
+                    "n_fit": n_fit,
+                    "bias_percent": 100.0 * mean,
+                    "bias_uncertainty_percent": 100.0 * mean_error,
+                    "resolution_percent": 100.0 * sigma,
+                    "resolution_uncertainty_percent": 100.0 * sigma_error,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _plot_momentum_resolution(table, variable, output, label):
+    import matplotlib.pyplot as plt
+
+    from trackcomb.plot import make_figure
+
+    points = table[table["variable"] == variable]
+    centers = 0.5 * (points["bin_low"] + points["bin_high"])
+    widths = 0.5 * (points["bin_high"] - points["bin_low"])
+    fig, axes = make_figure(
+        2,
+        1,
+        figsize=(9, 10),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 2]},
+    )
+    axes[0].errorbar(
+        centers,
+        points["resolution_percent"],
+        xerr=widths,
+        yerr=points["resolution_uncertainty_percent"],
+        fmt="o",
+        capsize=2,
+    )
+    axes[0].set_ylabel(r"Momentum resolution $\sigma(\Delta p/p)$ [%]")
+    axes[0].set_ylim(bottom=0.0)
+    axes[0].grid(True, alpha=0.3)
+    axes[1].errorbar(
+        centers,
+        points["bias_percent"],
+        xerr=widths,
+        yerr=points["bias_uncertainty_percent"],
+        fmt="o",
+        capsize=2,
+    )
+    axes[1].axhline(0.0, color="black", linewidth=1)
+    axes[1].set_xlabel(f"True {KINEMATIC_LABELS[variable]}")
+    axes[1].set_ylabel(r"Momentum bias $\mu(\Delta p/p)$ [%]")
+    axes[1].grid(True, alpha=0.3)
+    fig.suptitle(
+        f"{label}: Gaussian core of "
+        r"$(p_{\mathrm{reco}}-p_{\mathrm{true}})/p_{\mathrm{true}}$"
+    )
+    fig.tight_layout()
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def make_momentum_resolution_plots(
+    dataframe_path, plot_dir, label=None, min_entries=20
+):
+    """Write Gaussian-fit momentum resolution and bias plots and table."""
+    frame = pd.read_parquet(dataframe_path)
+    table = _momentum_resolution_table(frame, min_entries=min_entries)
+    plot_dir = Path(plot_dir)
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    label = label or _infer_label(dataframe_path)
+    suffix = f"_{label}" if label else ""
+    table["sample_label"] = label
+    table_path = plot_dir / f"momentum_resolution_binned{suffix}.parquet"
+    table.to_parquet(table_path, index=False)
+    print(f"Saved {table_path}")
+    for variable in ("p", "eta", "phi"):
+        output = plot_dir / f"deltap_over_p_vs_{variable}{suffix}.png"
+        _plot_momentum_resolution(table, variable, output, label)
+        print(f"Saved {output}")
 
 
 def _infer_label(dataframe_path):
@@ -405,6 +567,12 @@ def main():
     parser.add_argument(
         "--list-tags", action="store_true", help="print common selectable tags"
     )
+    parser.add_argument(
+        "--min-resolution-entries",
+        type=int,
+        default=20,
+        help="minimum truth-matched tracks required for a Gaussian bin fit",
+    )
     args = parser.parse_args()
 
     if args.list_tags:
@@ -449,6 +617,17 @@ def main():
             args.selection_tags,
             args.label,
         )
+    resolution_dir = (
+        Path(args.plot_dir) / "momentum_resolution"
+        if args.all_track_types
+        else args.plot_dir
+    )
+    make_momentum_resolution_plots(
+        dataframe_path,
+        resolution_dir,
+        args.label,
+        args.min_resolution_entries,
+    )
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 # Long-track efficiency and fake-rate study
 
 `src/tracking/tracking_efficiencies.py` produces a reusable particle-level Parquet and,
-in the same invocation, plots Long-track efficiency and fake rate versus truth/reconstructed
-`pt`, `eta`, and `p`.
+in the same invocation, plots Long-track efficiency and ghost rate versus `pt`, `eta`, `p`, and
+`phi`, plus momentum resolution and bias versus true `p`, `eta`, and `phi`.
 
 ## Run on ROOT input
 
@@ -39,9 +39,14 @@ luminosities does not overwrite earlier results. For the command above the outpu
 contains:
 
 - `tracking_efficiency_0p2e34.png`: efficiency versus truth `pt`, `eta`, and `p`;
-- `tracking_ghost_rate_0p2e34.png`: ghost fraction versus reconstructed `pt`, `eta`, and `p`;
+- `tracking_ghost_rate_0p2e34.png`: ghost fraction versus reconstructed `pt`, `eta`, `p`, and
+  `phi`;
 - `tracking_performance_binned_0p2e34.parquet`: bin edges, raw numerators/denominators, ratios,
   and binomial uncertainties.
+- `momentum_resolution/deltap_over_p_vs_{p,eta,phi}_0p2e34.png`: Gaussian-core momentum
+  resolution and bias;
+- `momentum_resolution/momentum_resolution_binned_0p2e34.parquet`: fitted means, widths,
+  uncertainties, and populations for every truth-kinematic bin.
 
 The main Parquet contains both `row_type == "reconstructible"` denominator rows and
 `row_type == "long"` reconstructed-track rows, so alternative analyses can be performed without
@@ -56,15 +61,31 @@ efficiency = unique truth-matched Long tracks satisfying T & S
              -------------------------------------------------
                     MCReconstructible particles satisfying T & S
 
-fake rate = reconstructed Long tracks without a truth match
-            ------------------------------------------------
-                    all reconstructed Long tracks
+ghost rate = reconstructed Long tracks without a truth match
+             ------------------------------------------------
+                     all reconstructed Long tracks
 ```
 
-The efficiency uses truth kinematics. The fake rate uses reconstructed kinematics because an
-unmatched track has no valid truth particle. Repeated Long tracks matched to the same `(run,
+The efficiency uses truth kinematics. The ghost-rate numerator and denominator both use
+reconstructed kinematics because an unmatched track has no valid truth particle. Repeated Long
+tracks matched to the same `(run,
 event, mc_key)` count once in the efficiency numerator, while all reconstructed tracks remain in
-the fake-rate denominator.
+the ghost-rate denominator.
+
+## Momentum resolution and bias
+
+For every truth-matched reconstructed Long track, the signed residual is
+
+```text
+delta_p_over_p = (p_reco - p_true) / p_true
+```
+
+Tracks are sliced in bins of true `p`, true `eta`, or true `phi`. In each bin, an unbinned
+Gaussian maximum-likelihood fit is performed on the residual core with iterative three-sigma
+clipping. The fitted Gaussian width is the momentum resolution and its mean is the momentum
+bias; both are reported in percent. The signed residual is required to measure bias, while the
+positive Gaussian width measures the magnitude of the resolution corresponding to
+`|p_reco-p_true|/p_true`.
 
 ## Alternative truth tags
 

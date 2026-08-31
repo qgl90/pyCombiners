@@ -12,6 +12,7 @@ import pandas as pd
 from trackcomb.plot import make_figure
 from tracking.tracking_efficiencies import (
     COMMON_TAGS,
+    KINEMATIC_LABELS,
     TRACK_TYPES,
     _performance_tables,
     _selection,
@@ -19,8 +20,7 @@ from tracking.tracking_efficiencies import (
 )
 
 
-VARIABLES = ("pt", "eta", "p")
-AXIS_LABELS = {"pt": r"$p_T$ [GeV]", "eta": r"$\eta$", "p": r"$p$ [GeV]"}
+VARIABLES = ("pt", "eta", "p", "phi")
 
 
 def _integrated_summary(frame, label, track_type, tags):
@@ -62,7 +62,7 @@ def _plot_comparison(
 ):
     import matplotlib.pyplot as plt
 
-    fig, axes = make_figure(1, 3, figsize=(21, 6))
+    fig, axes = make_figure(1, len(VARIABLES), figsize=(28, 6))
     for axis, variable in zip(axes, VARIABLES):
         for label, table in tables.items():
             points = table[table["variable"] == variable]
@@ -76,7 +76,7 @@ def _plot_comparison(
                 capsize=2,
                 label=label,
             )
-        axis.set_xlabel(AXIS_LABELS[variable])
+        axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
         axis.set_ylim(0.0, 105.0)
         axis.grid(True, alpha=0.3)
