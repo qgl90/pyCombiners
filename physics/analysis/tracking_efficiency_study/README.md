@@ -1,0 +1,127 @@
+# Long-track efficiency and fake-rate study
+
+`src/tracking/tracking_efficiencies.py` produces a reusable particle-level Parquet and,
+in the same invocation, plots Long-track efficiency and fake rate versus truth/reconstructed
+`pt`, `eta`, and `p`.
+
+## Run on ROOT input
+
+From the repository root:
+
+```bash
+./myenv/run PYTHONPATH=src python3 src/tracking/tracking_efficiencies.py \
+  --input '/eos/lhcb/wg/rta/WP6/tdr_u2_august2026/middle-scenario-july2026_0p2e34/Bs_Jpsimm_Phi/moore/Bs_Jpsimm_Phi_13144011_0p2e34_slot_*_100_event_container.root' \
+  --max-events 1000 \
+  --chunk-size 100 \
+  --workers 20 \
+  --out bs_jpsi_phi_tracking/tracking_particles_0p2e34.parquet \
+  --plot-dir bs_jpsi_phi_tracking
+```
+
+The default efficiency selection is track type `long` plus `from_signal`. The available track-type
+definitions are:
+
+```text
+long   = has_velo & has_t
+down   = has_ut   & has_t
+longft = has_velo & has_ft
+longmp = has_velo & has_mp
+```
+
+The selected track type is required consistently in both numerator and denominator.
+
+Pass `--all-track-types` to make a separate plot directory for `long`, `down`,
+`longft`, and `longmp` in one invocation. This is the mode used by the CI
+performance-studies pipeline.
+
+The sample label is inferred from the Parquet name, so using the same plot directory for several
+luminosities does not overwrite earlier results. For the command above the output directory
+contains:
+
+- `tracking_efficiency_0p2e34.png`: efficiency versus truth `pt`, `eta`, and `p`;
+- `tracking_ghost_rate_0p2e34.png`: ghost fraction versus reconstructed `pt`, `eta`, and `p`;
+- `tracking_performance_binned_0p2e34.parquet`: bin edges, raw numerators/denominators, ratios,
+  and binomial uncertainties.
+
+The main Parquet contains both `row_type == "reconstructible"` denominator rows and
+`row_type == "long"` reconstructed-track rows, so alternative analyses can be performed without
+rerunning reconstruction.
+
+## Definitions
+
+For track-type tag `T` and an optional common truth-tag selection `S`:
+
+```text
+efficiency = unique truth-matched Long tracks satisfying T & S
+             -------------------------------------------------
+                    MCReconstructible particles satisfying T & S
+
+fake rate = reconstructed Long tracks without a truth match
+            ------------------------------------------------
+                    all reconstructed Long tracks
+```
+
+The efficiency uses truth kinematics. The fake rate uses reconstructed kinematics because an
+unmatched track has no valid truth particle. Repeated Long tracks matched to the same `(run,
+event, mc_key)` count once in the efficiency numerator, while all reconstructed tracks remain in
+the fake-rate denominator.
+
+## Alternative truth tags
+
+List the supported common tags:
+
+```bash
+PYTHONPATH=src python3 src/tracking/tracking_efficiencies.py --list-tags
+```
+
+Use one or more tags as an AND selection:
+
+```bash
+# Inclusive efficiency for the `long` reconstructibility category
+PYTHONPATH=src python3 src/tracking/tracking_efficiencies.py \
+  --dataframe bs_jpsi_phi/tracking_efficiency/0p2_lumi.parquet \
+  --track-type long \
+  --selection-tags \
+  --plot-dir bs_jpsi_phi/tracking_efficiency/inclusive
+
+# Beauty-origin tracks in the `longmp` category
+PYTHONPATH=src python3 src/tracking/tracking_efficiencies.py \
+  --dataframe bs_jpsi_phi/tracking_efficiency/0p2_lumi.parquet \
+  --track-type longmp \
+  --selection-tags from_beauty \
+  --plot-dir bs_jpsi_phi/tracking_efficiency/from_beauty_longmp
+```
+
+The additional tags available consistently on MCReconstructible particles and matched Long-track
+truth are `from_signal`, `positive_charge`, `negative_charge`, `from_beauty`, and `from_charm`.
+The primitive acceptance flags and all four derived track-type columns are retained in the main
+Parquet. The input also provides `from_strange` on MCReconstructible particles, but no directly
+equivalent matched-Long field exists. It is stored as `from_strange_reconstructible` only on
+reconstructible rows and is deliberately not offered as a common efficiency selection.
+
+## Compare luminosity samples
+
+Once the three particle Parquets have been produced, compare every track type with:
+
+```bash
+./myenv/run PYTHONPATH=src python3 src/tracking/compare_tracking_efficiencies.py \
+  --input 0p2e34 bs_jpsi_phi_tracking/tracking_particles_0p2e34.parquet \
+  --input 1p0e34 bs_jpsi_phi_tracking/tracking_particles_1p0e34.parquet \
+  --input 1p3e34 bs_jpsi_phi_tracking/tracking_particles_1p3e34.parquet \
+  --selection-tags from_signal \
+  --out-dir bs_jpsi_phi_tracking/comparison
+```
+
+This writes one efficiency comparison PNG for each of `long`, `down`, `longft`, and `longmp`, plus
+`tracking_ghost_rate_comparison.png`. It also writes `tracking_comparison_summary.parquet` with the
+integrated raw counts/rates and `tracking_comparison_binned.parquet` with every plotted bin. To
+compare only selected categories, add for example `--track-types long longft`.
+
+## Pipeline
+
+The repository pipeline produces the tracking particle Parquet, plots all four
+track types, and runs the PID study on the same input sample:
+
+```bash
+snakemake --snakefile workflow/performance_studies.smk -c4
+```

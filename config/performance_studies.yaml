@@ -1,0 +1,5 @@
+# Long-track PID and tracking performance pipeline.
+output_dir: public/performance_studies
+input: input/eventtuple_bsjpsiphi_1p0e34_1000evts.root
+max_events: 1000
+label: 1p0e34

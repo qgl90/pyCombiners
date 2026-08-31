@@ -1,0 +1,4 @@
+# CI override: 1k-event Bs -> J/psi phi sample with RICH and MC truth.
+input: /data/ci/input/eventtuple_bsjpsiphi_1p0e34_1000evts.root
+max_events: 1000
+label: ci
