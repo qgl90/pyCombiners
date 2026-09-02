@@ -54,6 +54,11 @@ The main Parquet contains both `row_type == "reconstructible"` denominator rows 
 `row_type == "long"` reconstructed-track rows, so alternative analyses can be performed without
 rerunning reconstruction.
 
+Every efficiency and ghost-rate panel also shows its denominator spectrum on a secondary y-axis.
+For efficiency this is the selected MC-reconstructible population in truth kinematics; for ghost
+rate it is the full reconstructed BestLong population in reconstructed kinematics. Comparison
+plots show one dashed denominator spectrum per sample in the same colour as its rate curve.
+
 ## Definitions
 
 For track-type tag `T` and an optional common truth-tag selection `S`:

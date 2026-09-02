@@ -308,11 +308,32 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
     from trackcomb.plot import make_figure
 
     variables = ("pt", "eta", "p", "phi")
+    denominator_field = {
+        "efficiency": "efficiency_denominator",
+        "fake_rate": "fake_denominator",
+    }[value]
     fig, axes = make_figure(1, len(variables), figsize=(28, 6))
     for axis, variable in zip(axes, variables):
         points = table[table["variable"] == variable]
         centers = 0.5 * (points["bin_low"] + points["bin_high"])
         widths = 0.5 * (points["bin_high"] - points["bin_low"])
+        bin_edges = np.append(
+            points["bin_low"].to_numpy(), points["bin_high"].iloc[-1]
+        )
+        distribution_axis = axis.twinx()
+        distribution_axis.stairs(
+            points[denominator_field],
+            bin_edges,
+            fill=True,
+            color="0.65",
+            alpha=0.25,
+        )
+        distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
+        distribution_axis.tick_params(axis="y", colors="0.4")
+        distribution_axis.set_ylim(bottom=0.0)
+        distribution_axis.set_zorder(0)
+        axis.set_zorder(1)
+        axis.patch.set_visible(False)
         axis.errorbar(
             centers,
             100.0 * points[value],

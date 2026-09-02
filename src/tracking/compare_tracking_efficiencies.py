@@ -62,12 +62,20 @@ def _plot_comparison(
 ):
     import matplotlib.pyplot as plt
 
+    denominator_field = {
+        "efficiency": "efficiency_denominator",
+        "fake_rate": "fake_denominator",
+    }[value]
     fig, axes = make_figure(1, len(VARIABLES), figsize=(28, 6))
     for axis, variable in zip(axes, VARIABLES):
+        distribution_axis = axis.twinx()
         for label, table in tables.items():
             points = table[table["variable"] == variable]
             centers = 0.5 * (points["bin_low"] + points["bin_high"])
-            axis.errorbar(
+            bin_edges = np.append(
+                points["bin_low"].to_numpy(), points["bin_high"].iloc[-1]
+            )
+            plotted = axis.errorbar(
                 centers,
                 100.0 * points[value],
                 yerr=100.0 * points[uncertainty],
@@ -76,11 +84,24 @@ def _plot_comparison(
                 capsize=2,
                 label=label,
             )
+            distribution_axis.stairs(
+                points[denominator_field],
+                bin_edges,
+                color=plotted.lines[0].get_color(),
+                alpha=0.35,
+                linestyle="--",
+            )
         axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
         axis.set_ylim(0.0, 105.0)
         axis.grid(True, alpha=0.3)
         axis.legend()
+        distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
+        distribution_axis.tick_params(axis="y", colors="0.4")
+        distribution_axis.set_ylim(bottom=0.0)
+        distribution_axis.set_zorder(0)
+        axis.set_zorder(1)
+        axis.patch.set_visible(False)
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")
