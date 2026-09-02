@@ -260,7 +260,7 @@ def _performance_tables(frame, track_type, tags):
         "phi": (
             "truth_phi",
             "reco_phi",
-            np.linspace(-np.pi, np.pi, 65),
+            np.linspace(-np.pi, np.pi, 100),
             1.0,
         ),
     }
@@ -317,16 +317,16 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
         points = table[table["variable"] == variable]
         centers = 0.5 * (points["bin_low"] + points["bin_high"])
         widths = 0.5 * (points["bin_high"] - points["bin_low"])
-        bin_edges = np.append(
-            points["bin_low"].to_numpy(), points["bin_high"].iloc[-1]
+        distribution_edges = np.linspace(
+            points["bin_low"].iloc[0], points["bin_high"].iloc[-1], 100
         )
         distribution_axis = axis.twinx()
         distribution_axis.stairs(
             points[denominator_field],
-            bin_edges,
+            distribution_edges,
             fill=True,
-            color="0.65",
-            alpha=0.25,
+            color="gray",
+            alpha=0.20,
         )
         distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
         distribution_axis.tick_params(axis="y", colors="0.4")

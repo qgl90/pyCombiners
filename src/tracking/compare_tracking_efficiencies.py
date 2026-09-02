@@ -72,10 +72,12 @@ def _plot_comparison(
         for label, table in tables.items():
             points = table[table["variable"] == variable]
             centers = 0.5 * (points["bin_low"] + points["bin_high"])
-            bin_edges = np.append(
-                points["bin_low"].to_numpy(), points["bin_high"].iloc[-1]
+            distribution_edges = np.linspace(
+                points["bin_low"].iloc[0],
+                points["bin_high"].iloc[-1],
+                100,
             )
-            plotted = axis.errorbar(
+            axis.errorbar(
                 centers,
                 100.0 * points[value],
                 yerr=100.0 * points[uncertainty],
@@ -86,10 +88,10 @@ def _plot_comparison(
             )
             distribution_axis.stairs(
                 points[denominator_field],
-                bin_edges,
-                color=plotted.lines[0].get_color(),
-                alpha=0.35,
-                linestyle="--",
+                distribution_edges,
+                fill=True,
+                color="gray",
+                alpha=0.08,
             )
         axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)

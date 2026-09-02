@@ -91,6 +91,11 @@ def test_ghost_rate_uses_reconstructed_phi_for_both_counts():
     table = _performance_tables(frame, "long", ["from_signal"])
     phi = table[table["variable"] == "phi"]
 
+    assert len(phi) == 99
+    np.testing.assert_allclose(
+        np.append(phi["bin_low"].to_numpy(), phi["bin_high"].iloc[-1]),
+        np.linspace(-np.pi, np.pi, 100),
+    )
     assert int(phi["fake_numerator"].sum()) == 1
     assert int(phi["fake_denominator"].sum()) == 3
 

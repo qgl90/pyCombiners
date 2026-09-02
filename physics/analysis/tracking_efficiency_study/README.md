@@ -57,7 +57,8 @@ rerunning reconstruction.
 Every efficiency and ghost-rate panel also shows its denominator spectrum on a secondary y-axis.
 For efficiency this is the selected MC-reconstructible population in truth kinematics; for ghost
 rate it is the full reconstructed BestLong population in reconstructed kinematics. Comparison
-plots show one dashed denominator spectrum per sample in the same colour as its rate curve.
+plots use the same gray filled representation. The denominator histograms use 100 uniformly
+spaced edge points over the corresponding efficiency or ghost-rate plotting range.
 
 ## Definitions
 
