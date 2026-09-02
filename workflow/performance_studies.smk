@@ -10,9 +10,11 @@ include: "common.smk"
 _RECO = outdir("reconstruction")
 _PID = outdir("analysis", "pid")
 _TRACKING = outdir("analysis", "tracking")
+_PV = outdir("analysis", "pv")
 _LABEL = config.get("label", "sample")
 _PID_TAG = f"pid_{_LABEL}"
 _TRACK_TYPES = ["long", "down", "longft", "longmp"]
+_PV_COORDINATES = ["x", "y", "z", "time"]
 
 
 rule all:
@@ -46,6 +48,21 @@ rule all:
         f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_p_{_LABEL}.pdf",
         f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_eta_{_LABEL}.pdf",
         f"{_TRACKING}/momentum_resolution/gaussian_fit_checks_vs_phi_{_LABEL}.pdf",
+        f"{_PV}/pv_resolution_fits_{_LABEL}.parquet",
+        f"{_PV}/pv_pull_fits_{_LABEL}.parquet",
+        f"{_PV}/pv_pull_global_fits_{_LABEL}.parquet",
+        f"{_PV}/pv_residuals_vs_ndof_{_LABEL}.png",
+        f"{_PV}/pv_bias_resolution_vs_ndof_{_LABEL}.png",
+        f"{_PV}/pv_pulls_{_LABEL}.png",
+        f"{_PV}/pv_pull_mean_width_vs_ndof_{_LABEL}.png",
+        expand(
+            f"{_PV}/pv_gaussian_fit_checks_{{coordinate}}_{_LABEL}.png",
+            coordinate=_PV_COORDINATES,
+        ),
+        expand(
+            f"{_PV}/pv_pull_gaussian_fit_checks_{{coordinate}}_{_LABEL}.png",
+            coordinate=_PV_COORDINATES,
+        ),
 
 
 rule pid_performance:
@@ -142,4 +159,43 @@ rule tracking_performance:
         " --plot-dir {params.outdir}"
         " --label {params.label}"
         " --all-track-types"
+        " > {log} 2>&1"
+
+
+rule pv_resolution:
+    input:
+        script="src/pv/pv_resolution.py",
+    output:
+        parquet=f"{_RECO}/pv_residuals.parquet",
+        resolution_table=f"{_PV}/pv_resolution_fits_{_LABEL}.parquet",
+        pull_table=f"{_PV}/pv_pull_fits_{_LABEL}.parquet",
+        global_pull_table=f"{_PV}/pv_pull_global_fits_{_LABEL}.parquet",
+        residuals=f"{_PV}/pv_residuals_vs_ndof_{_LABEL}.png",
+        resolution=f"{_PV}/pv_bias_resolution_vs_ndof_{_LABEL}.png",
+        pulls=f"{_PV}/pv_pulls_{_LABEL}.png",
+        pull_calibration=f"{_PV}/pv_pull_mean_width_vs_ndof_{_LABEL}.png",
+        residual_checks=expand(
+            f"{_PV}/pv_gaussian_fit_checks_{{coordinate}}_{_LABEL}.png",
+            coordinate=_PV_COORDINATES,
+        ),
+        pull_checks=expand(
+            f"{_PV}/pv_pull_gaussian_fit_checks_{{coordinate}}_{_LABEL}.png",
+            coordinate=_PV_COORDINATES,
+        ),
+    log:
+        f"{_RECO}/pv_resolution.log",
+    params:
+        data=config["input"],
+        max_events=config["max_events"],
+        outdir=_PV,
+        label=_LABEL,
+    threads: workflow.cores
+    shell:
+        "PYTHONPATH=src python3 {input.script}"
+        " --input '{params.data}'"
+        " --max-events {params.max_events}"
+        " --workers {threads}"
+        " --out {output.parquet}"
+        " --plot-dir {params.outdir}"
+        " --label {params.label}"
         " > {log} 2>&1"

@@ -95,3 +95,10 @@ Additional pull outputs are:
 - `pv_pulls_<label>.png`: inclusive pull histograms compared with an ideal `N(0,1)`;
 - `pv_pull_mean_width_vs_ndof_<label>.png`: Gaussian pull width and mean versus `ndof`;
 - `pv_pull_gaussian_fit_checks_{x,y,z,time}_<label>.png`: per-bin pull fit checks.
+
+## Continuous integration
+
+The `performance_studies` Snakemake pipeline also runs this study on the CI
+Bs -> J/psi phi sample. Its matched-PV dataframe is written below the pipeline
+reconstruction directory, while all fit tables and plots are published in the
+GitLab job artifacts under `public/performance_studies/analysis/pv/`.
