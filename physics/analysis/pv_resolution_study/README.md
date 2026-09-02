@@ -34,7 +34,11 @@ Plot again without reading ROOT:
 
 The dataframe retains reconstructed and truth `x`, `y`, `z`, and time, `ndof`, `chi2ndof`, the
 full lower triangle of the reconstructed 4x4 covariance, and the four residuals
-`PVState - PVMC`.
+`PVState - PVMC`. It also stores the four assigned coordinate errors and pulls. The covariance
+ordering is `(x, y, z, time)`, so the errors are taken from
+`sqrt(cov_0_0)`, `sqrt(cov_1_1)`, `sqrt(cov_2_2)`, and `sqrt(cov_3_3)`, respectively.
+Non-positive or non-finite diagonal variances produce `NaN` errors and pulls and are excluded
+from pull fits.
 
 ## Resolution definition
 
@@ -69,3 +73,25 @@ can be replaced with, for example:
 
 The input coordinates are assumed to use the event-tuple units: millimetres for `x`, `y`, `z`
 and nanoseconds for time.
+
+## Pull calibration
+
+For coordinate `q` in `(x, y, z, time)`, the pull is
+
+```text
+pull_q = (PVState_q - PVMC_q) / sqrt(PVState_cov_q_q)
+```
+
+An accurately calibrated, unbiased covariance should give a Gaussian pull mean compatible with
+zero and width compatible with one. A nonzero mean indicates bias in units of the assigned
+uncertainty. A width above one means the errors are underestimated; a width below one means they
+are overestimated. The study provides both inclusive pull distributions and pull mean/width
+versus `ndof`, with reference lines at zero and one.
+
+Additional pull outputs are:
+
+- `pv_pull_global_fits_<label>.parquet`: inclusive means, widths, fit ranges, and populations;
+- `pv_pull_fits_<label>.parquet`: the same quantities in each `ndof` bin;
+- `pv_pulls_<label>.png`: inclusive pull histograms compared with an ideal `N(0,1)`;
+- `pv_pull_mean_width_vs_ndof_<label>.png`: Gaussian pull width and mean versus `ndof`;
+- `pv_pull_gaussian_fit_checks_{x,y,z,time}_<label>.png`: per-bin pull fit checks.

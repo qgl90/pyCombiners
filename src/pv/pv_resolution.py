@@ -26,6 +26,20 @@ RESIDUALS = {
     "time": ("delta_time", "PV time residual [ns]"),
 }
 
+PULLS = {
+    "x": ("pull_x", "PV x pull"),
+    "y": ("pull_y", "PV y pull"),
+    "z": ("pull_z", "PV z pull"),
+    "time": ("pull_time", "PV time pull"),
+}
+
+_COVARIANCE_DIAGONAL = {
+    "x": "cov_0_0",
+    "y": "cov_1_1",
+    "z": "cov_2_2",
+    "time": "cov_3_3",
+}
+
 
 def _flat(values):
     return np.asarray(ak.flatten(values))
@@ -33,6 +47,20 @@ def _flat(values):
 
 def _repeat_event(values, counts):
     return np.repeat(np.asarray(values), counts)
+
+
+def _add_pull_columns(frame):
+    """Add PV errors and pulls from the reconstructed covariance diagonal."""
+    for variable, covariance_field in _COVARIANCE_DIAGONAL.items():
+        variance = frame[covariance_field].to_numpy(dtype=float)
+        error = np.sqrt(
+            np.where(
+                np.isfinite(variance) & (variance > 0.0), variance, np.nan
+            )
+        )
+        frame[f"sigma_{variable}"] = error
+        frame[f"pull_{variable}"] = frame[f"delta_{variable}"] / error
+    return frame
 
 
 def _pv_frame(pvs, event_info):
@@ -82,7 +110,7 @@ def _pv_frame(pvs, event_info):
     frame["delta_y"] = frame["y"] - frame["mc_y"]
     frame["delta_z"] = frame["z"] - frame["mc_z"]
     frame["delta_time"] = frame["time"] - frame["mc_time"]
-    return frame.reset_index(drop=True)
+    return _add_pull_columns(frame).reset_index(drop=True)
 
 
 def reconstruction(chunk):
@@ -90,10 +118,17 @@ def reconstruction(chunk):
     return _pv_frame(load_pvs(chunk, mc=True), load_event_info(chunk))
 
 
-def _fit_table(frame, ndof_edges, min_entries=30, clip_sigma=3.0):
+def _fit_table(
+    frame,
+    ndof_edges,
+    min_entries=30,
+    clip_sigma=3.0,
+    definitions=RESIDUALS,
+    quantity="residual",
+):
     rows = []
     ndof = frame["ndof"].to_numpy(dtype=float)
-    for variable, (field, unit_label) in RESIDUALS.items():
+    for variable, (field, unit_label) in definitions.items():
         residual = frame[field].to_numpy(dtype=float)
         for index, (low, high) in enumerate(
             zip(ndof_edges[:-1], ndof_edges[1:])
@@ -112,8 +147,13 @@ def _fit_table(frame, ndof_edges, min_entries=30, clip_sigma=3.0):
             rows.append(
                 {
                     "variable": variable,
-                    "residual_field": field,
-                    "unit": "ns" if variable == "time" else "mm",
+                    "quantity": quantity,
+                    "value_field": field,
+                    "unit": (
+                        ""
+                        if quantity == "pull"
+                        else ("ns" if variable == "time" else "mm")
+                    ),
                     "ndof_low": low,
                     "ndof_high": high,
                     "n_pvs": len(values),
@@ -135,6 +175,38 @@ def _fit_table(frame, ndof_edges, min_entries=30, clip_sigma=3.0):
                     "axis_label": unit_label,
                 }
             )
+    return pd.DataFrame(rows)
+
+
+def _global_pull_table(frame, min_entries=30, clip_sigma=3.0):
+    rows = []
+    for variable, (field, _) in PULLS.items():
+        values = frame[field].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        fit = _gaussian_core_fit(
+            values,
+            min_entries=min_entries,
+            clip_sigma=clip_sigma,
+        )
+        rows.append(
+            {
+                "variable": variable,
+                "n_pvs": len(values),
+                "n_fit": fit["n_fit"],
+                "n_rejected": len(values) - fit["n_fit"],
+                "core_fraction": fit["core_fraction"],
+                "fit_status": fit["fit_status"],
+                "clip_sigma": clip_sigma,
+                "seed_fit_low": fit["seed_fit_low"],
+                "seed_fit_high": fit["seed_fit_high"],
+                "fit_low": fit["fit_low"],
+                "fit_high": fit["fit_high"],
+                "pull_mean": fit["mean"],
+                "pull_mean_uncertainty": fit["mean_error"],
+                "pull_width": fit["sigma"],
+                "pull_width_uncertainty": fit["sigma_error"],
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -170,13 +242,72 @@ def _plot_residuals(frame, output, label):
     plt.close(fig)
 
 
-def _plot_bias_resolution(table, output, label):
+def _plot_global_pulls(frame, global_fits, output, label):
+    import matplotlib.pyplot as plt
+
+    from trackcomb.plot import make_figure
+
+    fig, axes = make_figure(1, 4, figsize=(28, 6))
+    for axis, (variable, (field, xlabel)) in zip(axes, PULLS.items()):
+        values = frame[field].to_numpy(dtype=float)
+        values = values[np.isfinite(values)]
+        fit = global_fits[global_fits["variable"] == variable].iloc[0]
+        _, edges, _ = axis.hist(
+            values,
+            bins=60,
+            range=(-5.0, 5.0),
+            histtype="step",
+            color="black",
+            label="PVs",
+        )
+        x = np.linspace(-5.0, 5.0, 500)
+        bin_width = edges[1] - edges[0]
+        standard = (
+            len(values)
+            * bin_width
+            * np.exp(-0.5 * x**2)
+            / np.sqrt(2.0 * np.pi)
+        )
+        axis.plot(x, standard, color="0.4", linestyle="--", label="N(0, 1)")
+        if fit["fit_status"] == "fitted":
+            gaussian = (
+                fit["n_fit"]
+                * bin_width
+                * np.exp(
+                    -0.5 * ((x - fit["pull_mean"]) / fit["pull_width"]) ** 2
+                )
+                / (np.sqrt(2.0 * np.pi) * fit["pull_width"])
+            )
+            axis.plot(x, gaussian, color="tab:red", label="Gaussian core")
+        axis.axvline(0.0, color="black", linewidth=1, alpha=0.5)
+        axis.set_xlabel(xlabel)
+        axis.set_ylabel("PVs")
+        axis.set_xlim(-5.0, 5.0)
+        axis.text(
+            0.03,
+            0.96,
+            f"mean = {fit['pull_mean']:.3g}\nwidth = {fit['pull_width']:.3g}\n"
+            f"N = {fit['n_pvs']:.0f}, Nfit = {fit['n_fit']:.0f}",
+            transform=axis.transAxes,
+            va="top",
+            fontsize=10,
+        )
+        axis.grid(True, alpha=0.2)
+        axis.legend(fontsize=9)
+    fig.suptitle(f"{label}: PV covariance pull calibration")
+    fig.tight_layout()
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_bias_resolution(table, output, label, pulls=False):
     import matplotlib.pyplot as plt
 
     from trackcomb.plot import make_figure
 
     fig, axes = make_figure(2, 4, figsize=(28, 11), sharex="col")
-    for column, (variable, _) in enumerate(RESIDUALS.items()):
+    definitions = PULLS if pulls else RESIDUALS
+    for column, (variable, _) in enumerate(definitions.items()):
         unit = "ns" if variable == "time" else "mm"
         symbol = "t" if variable == "time" else variable
         points = table[table["variable"] == variable]
@@ -190,9 +321,18 @@ def _plot_bias_resolution(table, output, label):
             fmt="o",
             capsize=2,
         )
-        axes[0, column].set_ylabel(
-            rf"Resolution $\sigma(\Delta {symbol})$ [{unit}]", fontsize=10
-        )
+        if pulls:
+            axes[0, column].axhline(
+                1.0, color="black", linestyle="--", linewidth=1
+            )
+            axes[0, column].set_ylabel(
+                rf"Pull width $\sigma(P_{{{symbol}}})$", fontsize=10
+            )
+        else:
+            axes[0, column].set_ylabel(
+                rf"Resolution $\sigma(\Delta {symbol})$ [{unit}]",
+                fontsize=10,
+            )
         axes[0, column].set_ylim(bottom=0.0)
         axes[1, column].errorbar(
             centers,
@@ -204,25 +344,41 @@ def _plot_bias_resolution(table, output, label):
         )
         axes[1, column].axhline(0.0, color="black", linewidth=1)
         axes[1, column].set_xlabel("PV ndof", fontsize=10)
-        axes[1, column].set_ylabel(
-            rf"Bias $\mu(\Delta {symbol})$ [{unit}]", fontsize=10
-        )
+        if pulls:
+            axes[1, column].set_ylabel(
+                rf"Pull mean $\mu(P_{{{symbol}}})$", fontsize=10
+            )
+        else:
+            axes[1, column].set_ylabel(
+                rf"Bias $\mu(\Delta {symbol})$ [{unit}]", fontsize=10
+            )
         for axis in axes[:, column]:
             axis.grid(True, alpha=0.3)
             axis.set_xscale("symlog", linthresh=10.0)
             axis.tick_params(axis="both", labelsize=8)
-    fig.suptitle(
-        f"{label}: Gaussian PV bias and resolution versus ndof", fontsize=14
+    title = (
+        "Gaussian PV pull mean and width versus ndof"
+        if pulls
+        else "Gaussian PV bias and resolution versus ndof"
     )
+    fig.suptitle(f"{label}: {title}", fontsize=14)
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
-def _plot_fit_checks(frame, table, variable, output, label):
+def _plot_fit_checks(
+    frame,
+    table,
+    variable,
+    output,
+    label,
+    definitions=RESIDUALS,
+    quantity="residual",
+):
     import matplotlib.pyplot as plt
 
-    field, axis_label = RESIDUALS[variable]
+    field, axis_label = definitions[variable]
     points = table[table["variable"] == variable].reset_index(drop=True)
     n_columns = 3
     n_rows = int(np.ceil(len(points) / n_columns))
@@ -302,7 +458,8 @@ def _plot_fit_checks(frame, table, variable, output, label):
     for axis in axes[len(points) :]:
         axis.set_visible(False)
     fig.suptitle(
-        f"{label}: Gaussian fit checks for PV {variable}", fontsize=14
+        f"{label}: Gaussian {quantity} fit checks for PV {variable}",
+        fontsize=14,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.98))
     fig.savefig(output, dpi=150, bbox_inches="tight")
@@ -319,29 +476,63 @@ def make_plots(
 ):
     """Read matched PVs and write residual, fit, and diagnostic products."""
     frame = pd.read_parquet(dataframe_path)
+    frame = _add_pull_columns(frame)
     ndof_edges = np.asarray(ndof_edges, dtype=float)
     if len(ndof_edges) < 2 or np.any(np.diff(ndof_edges) <= 0.0):
         raise ValueError("ndof edges must be strictly increasing")
-    table = _fit_table(frame, ndof_edges, min_entries, clip_sigma)
+    residual_table = _fit_table(
+        frame, ndof_edges, min_entries, clip_sigma, RESIDUALS, "residual"
+    )
+    pull_table = _fit_table(
+        frame, ndof_edges, min_entries, clip_sigma, PULLS, "pull"
+    )
+    global_pull_table = _global_pull_table(frame, min_entries, clip_sigma)
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
     label = label or Path(dataframe_path).stem.removeprefix("pv_residuals_")
     suffix = f"_{label}" if label else ""
-    table["sample_label"] = label
+    residual_table["sample_label"] = label
+    pull_table["sample_label"] = label
+    global_pull_table["sample_label"] = label
 
-    table_path = plot_dir / f"pv_resolution_fits{suffix}.parquet"
+    residual_table_path = plot_dir / f"pv_resolution_fits{suffix}.parquet"
+    pull_table_path = plot_dir / f"pv_pull_fits{suffix}.parquet"
+    global_pull_path = plot_dir / f"pv_pull_global_fits{suffix}.parquet"
     residual_path = plot_dir / f"pv_residuals_vs_ndof{suffix}.png"
     resolution_path = plot_dir / f"pv_bias_resolution_vs_ndof{suffix}.png"
-    table.to_parquet(table_path, index=False)
+    pull_path = plot_dir / f"pv_pulls{suffix}.png"
+    pull_ndof_path = plot_dir / f"pv_pull_mean_width_vs_ndof{suffix}.png"
+    residual_table.to_parquet(residual_table_path, index=False)
+    pull_table.to_parquet(pull_table_path, index=False)
+    global_pull_table.to_parquet(global_pull_path, index=False)
     _plot_residuals(frame, residual_path, label)
-    _plot_bias_resolution(table, resolution_path, label)
-    print(f"Saved {table_path}")
+    _plot_bias_resolution(residual_table, resolution_path, label)
+    _plot_global_pulls(frame, global_pull_table, pull_path, label)
+    _plot_bias_resolution(pull_table, pull_ndof_path, label, pulls=True)
+    print(f"Saved {residual_table_path}")
+    print(f"Saved {pull_table_path}")
+    print(f"Saved {global_pull_path}")
     print(f"Saved {residual_path}")
     print(f"Saved {resolution_path}")
+    print(f"Saved {pull_path}")
+    print(f"Saved {pull_ndof_path}")
     for variable in RESIDUALS:
         output = plot_dir / f"pv_gaussian_fit_checks_{variable}{suffix}.png"
-        _plot_fit_checks(frame, table, variable, output, label)
+        _plot_fit_checks(frame, residual_table, variable, output, label)
         print(f"Saved {output}")
+        pull_output = (
+            plot_dir / f"pv_pull_gaussian_fit_checks_{variable}{suffix}.png"
+        )
+        _plot_fit_checks(
+            frame,
+            pull_table,
+            variable,
+            pull_output,
+            label,
+            PULLS,
+            "pull",
+        )
+        print(f"Saved {pull_output}")
 
 
 def main():
