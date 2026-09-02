@@ -12,6 +12,7 @@ import pandas as pd
 from trackcomb.plot import make_figure
 from tracking.tracking_efficiencies import (
     COMMON_TAGS,
+    KINEMATIC_LABELS,
     TRACK_TYPES,
     _performance_tables,
     _selection,
@@ -19,8 +20,7 @@ from tracking.tracking_efficiencies import (
 )
 
 
-VARIABLES = ("pt", "eta", "p")
-AXIS_LABELS = {"pt": r"$p_T$ [GeV]", "eta": r"$\eta$", "p": r"$p$ [GeV]"}
+VARIABLES = ("pt", "eta", "p", "phi")
 
 
 def _integrated_summary(frame, label, track_type, tags):
@@ -62,11 +62,21 @@ def _plot_comparison(
 ):
     import matplotlib.pyplot as plt
 
-    fig, axes = make_figure(1, 3, figsize=(21, 6))
+    denominator_field = {
+        "efficiency": "efficiency_denominator",
+        "fake_rate": "fake_denominator",
+    }[value]
+    fig, axes = make_figure(1, len(VARIABLES), figsize=(28, 6))
     for axis, variable in zip(axes, VARIABLES):
+        distribution_axis = axis.twinx()
         for label, table in tables.items():
             points = table[table["variable"] == variable]
             centers = 0.5 * (points["bin_low"] + points["bin_high"])
+            distribution_edges = np.linspace(
+                points["bin_low"].iloc[0],
+                points["bin_high"].iloc[-1],
+                100,
+            )
             axis.errorbar(
                 centers,
                 100.0 * points[value],
@@ -76,11 +86,24 @@ def _plot_comparison(
                 capsize=2,
                 label=label,
             )
-        axis.set_xlabel(AXIS_LABELS[variable])
+            distribution_axis.stairs(
+                points[denominator_field],
+                distribution_edges,
+                fill=True,
+                color="gray",
+                alpha=0.08,
+            )
+        axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
         axis.set_ylim(0.0, 105.0)
         axis.grid(True, alpha=0.3)
         axis.legend()
+        distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
+        distribution_axis.tick_params(axis="y", colors="0.4")
+        distribution_axis.set_ylim(bottom=0.0)
+        distribution_axis.set_zorder(0)
+        axis.set_zorder(1)
+        axis.patch.set_visible(False)
     fig.suptitle(title)
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")

@@ -1,8 +1,8 @@
 # Long-track efficiency and fake-rate study
 
 `src/tracking/tracking_efficiencies.py` produces a reusable particle-level Parquet and,
-in the same invocation, plots Long-track efficiency and fake rate versus truth/reconstructed
-`pt`, `eta`, and `p`.
+in the same invocation, plots Long-track efficiency and ghost rate versus `pt`, `eta`, `p`, and
+`phi`, plus momentum resolution and bias versus true `p`, `eta`, and `phi`.
 
 ## Run on ROOT input
 
@@ -39,13 +39,26 @@ luminosities does not overwrite earlier results. For the command above the outpu
 contains:
 
 - `tracking_efficiency_0p2e34.png`: efficiency versus truth `pt`, `eta`, and `p`;
-- `tracking_ghost_rate_0p2e34.png`: ghost fraction versus reconstructed `pt`, `eta`, and `p`;
+- `tracking_ghost_rate_0p2e34.png`: ghost fraction versus reconstructed `pt`, `eta`, `p`, and
+  `phi`;
 - `tracking_performance_binned_0p2e34.parquet`: bin edges, raw numerators/denominators, ratios,
   and binomial uncertainties.
+- `momentum_resolution/deltap_over_p_vs_{p,eta,phi}_0p2e34.png`: Gaussian-core momentum
+  resolution and bias;
+- `momentum_resolution/momentum_resolution_binned_0p2e34.parquet`: fitted means, widths,
+  uncertainties, fit ranges, status, and populations for every truth-kinematic bin;
+- `momentum_resolution/gaussian_fit_checks_vs_{p,eta,phi}_0p2e34.pdf`: multipage
+  per-bin residual histograms with the MAD seed window, final fit window, and Gaussian overlay.
 
 The main Parquet contains both `row_type == "reconstructible"` denominator rows and
 `row_type == "long"` reconstructed-track rows, so alternative analyses can be performed without
 rerunning reconstruction.
+
+Every efficiency and ghost-rate panel also shows its denominator spectrum on a secondary y-axis.
+For efficiency this is the selected MC-reconstructible population in truth kinematics; for ghost
+rate it is the full reconstructed BestLong population in reconstructed kinematics. Comparison
+plots use the same gray filled representation. The denominator histograms use 100 uniformly
+spaced edge points over the corresponding efficiency or ghost-rate plotting range.
 
 ## Definitions
 
@@ -56,15 +69,38 @@ efficiency = unique truth-matched Long tracks satisfying T & S
              -------------------------------------------------
                     MCReconstructible particles satisfying T & S
 
-fake rate = reconstructed Long tracks without a truth match
-            ------------------------------------------------
-                    all reconstructed Long tracks
+ghost rate = reconstructed Long tracks without a truth match
+             ------------------------------------------------
+                     all reconstructed Long tracks
 ```
 
-The efficiency uses truth kinematics. The fake rate uses reconstructed kinematics because an
-unmatched track has no valid truth particle. Repeated Long tracks matched to the same `(run,
+The efficiency uses truth kinematics. The ghost-rate numerator and denominator both use
+reconstructed kinematics because an unmatched track has no valid truth particle. Repeated Long
+tracks matched to the same `(run,
 event, mc_key)` count once in the efficiency numerator, while all reconstructed tracks remain in
-the fake-rate denominator.
+the ghost-rate denominator.
+
+## Momentum resolution and bias
+
+For every truth-matched reconstructed Long track, the signed residual is
+
+```text
+delta_p_over_p = (p_reco - p_true) / p_true
+```
+
+Tracks are sliced in bins of true `p`, true `eta`, or true `phi`. The suggested default fit range
+is obtained in two stages: seed the core with `median +/- 3 * 1.4826 * MAD`, then iteratively
+refit and retain `mean +/- 3 * sigma`. The final `mean +/- 3 * sigma` interval is stored as
+`fit_low_percent` and `fit_high_percent`; change both three-sigma selections with
+`--resolution-fit-sigma`. A bin is not fitted when fewer than `--min-resolution-entries`
+(default 20) remain in its robust core.
+
+The fitted Gaussian width is the momentum resolution and its mean is the momentum bias; both
+are reported in percent. The signed residual is required to measure bias, while the positive
+Gaussian width measures the magnitude of the resolution corresponding to
+`|p_reco-p_true|/p_true`. The diagnostic PDFs show every bin, including skipped bins, and annotate
+the total and fitted populations, fit status, mean, and width. This makes the chosen fit window
+and any non-Gaussian tails directly inspectable.
 
 ## Alternative truth tags
 
