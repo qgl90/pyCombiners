@@ -370,8 +370,8 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
                 fmt="o",
                 capsize=2,
                 label=category_label,
-                ms = 1 ,
-                elinewidth=1
+                ms=1,
+                elinewidth=1,
             )
         distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
         distribution_axis.tick_params(axis="y", colors="0.4")
