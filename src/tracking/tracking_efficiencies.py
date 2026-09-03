@@ -21,7 +21,6 @@ from trackcomb import (
 
 COMMON_TAGS = (
     "from_signal",
-    "not_from_signal",
     "positive_charge",
     "negative_charge",
     "from_beauty",
@@ -30,7 +29,7 @@ COMMON_TAGS = (
 
 DEFAULT_EFFICIENCY_SELECTIONS = (
     ("from_signal",),
-    ("not_from_signal",),
+    (),
 )
 
 TRACK_TYPES = {
@@ -207,13 +206,6 @@ def reconstruction(chunk):
 
 def _set_track_type_tags(frame):
     """Add the standard reconstructibility categories from primitive flags."""
-    not_from_signal = ~frame["from_signal"].fillna(False).astype(bool)
-    if {"row_type", "truth_matched"}.issubset(frame.columns):
-        has_truth_origin = (frame["row_type"] == "reconstructible") | frame[
-            "truth_matched"
-        ].fillna(False).astype(bool)
-        not_from_signal &= has_truth_origin
-    frame["not_from_signal"] = not_from_signal
     for name, (first, second) in TRACK_TYPES.items():
         frame[name] = frame[first].astype(bool) & frame[second].astype(bool)
     return frame
@@ -342,7 +334,7 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
                 100,
             )
             category_label = (
-                selection.replace("_", " ") if selection else "inclusive"
+                selection.replace("_", " ") if selection else "any long"
             )
             distribution_axis.stairs(
                 points[denominator_field],
@@ -790,7 +782,7 @@ def make_plots(dataframe_path, plot_dir, track_type, tags=None, label=None):
         "Tracking efficiency [%]",
         efficiency_path,
         (
-            f"{label}: {track_type}, signal-origin categories"
+            f"{label}: {track_type}, signal and inclusive"
             if tags is None
             else f"{label}: " + " & ".join((track_type, *tags))
         ),
@@ -853,7 +845,7 @@ def main():
         default=None,
         help=(
             "additional ANDed truth tags; by default plot from_signal and "
-            "not_from_signal separately, or pass with no values for inclusive"
+            "any Long track, or pass with no values for inclusive only"
         ),
     )
     parser.add_argument(

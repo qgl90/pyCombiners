@@ -15,10 +15,10 @@ from tracking.tracking_efficiencies import (
 )
 
 
-def test_default_efficiency_selections_split_signal_origin():
+def test_default_efficiency_selections_include_signal_and_any_long():
     assert DEFAULT_EFFICIENCY_SELECTIONS == (
         ("from_signal",),
-        ("not_from_signal",),
+        (),
     )
 
     frame = pd.DataFrame(
@@ -44,14 +44,14 @@ def test_default_efficiency_selections_split_signal_origin():
     )
 
     signal = _performance_tables(frame.copy(), "long", ["from_signal"])
-    background = _performance_tables(frame.copy(), "long", ["not_from_signal"])
+    inclusive = _performance_tables(frame.copy(), "long", [])
     signal_p = signal[signal["variable"] == "p"]
-    background_p = background[background["variable"] == "p"]
+    inclusive_p = inclusive[inclusive["variable"] == "p"]
 
     assert int(signal_p["efficiency_denominator"].sum()) == 1
     assert int(signal_p["efficiency_numerator"].sum()) == 1
-    assert int(background_p["efficiency_denominator"].sum()) == 1
-    assert int(background_p["efficiency_numerator"].sum()) == 1
+    assert int(inclusive_p["efficiency_denominator"].sum()) == 2
+    assert int(inclusive_p["efficiency_numerator"].sum()) == 2
 
 
 def test_pid_roc_uses_truth_and_rich_selected_species(tmp_path):
