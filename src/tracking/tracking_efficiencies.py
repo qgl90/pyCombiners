@@ -341,6 +341,11 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
             yerr=100.0 * points[uncertainty],
             fmt="o",
             capsize=2,
+            ms = 1 ,
+            color="black",         # marker face
+            ecolor="black",        # error-bar lines
+            markeredgecolor="black",
+            elinewidth=1
         )
         axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
