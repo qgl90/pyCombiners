@@ -41,6 +41,18 @@ rule all:
             f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_{_LABEL}.png",
             track_type=_TRACK_TYPES,
         ),
+        expand(
+            f"{_TRACKING}/{{track_type}}/tracking_chi2ndof_scan_binned_{_LABEL}.parquet",
+            track_type=_TRACK_TYPES,
+        ),
+        expand(
+            f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_chi2ndof_scan_{_LABEL}.png",
+            track_type=_TRACK_TYPES,
+        ),
+        expand(
+            f"{_TRACKING}/{{track_type}}/tracking_performance_chi2ndof_scan_{_LABEL}.png",
+            track_type=_TRACK_TYPES,
+        ),
         f"{_TRACKING}/momentum_resolution/momentum_resolution_binned_{_LABEL}.parquet",
         f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_p_{_LABEL}.png",
         f"{_TRACKING}/momentum_resolution/deltap_over_p_vs_eta_{_LABEL}.png",
@@ -112,6 +124,18 @@ rule tracking_performance:
         ),
         ghost=expand(
             f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_{_LABEL}.png",
+            track_type=_TRACK_TYPES,
+        ),
+        chi2_scan_table=expand(
+            f"{_TRACKING}/{{track_type}}/tracking_chi2ndof_scan_binned_{_LABEL}.parquet",
+            track_type=_TRACK_TYPES,
+        ),
+        chi2_scan_ghost=expand(
+            f"{_TRACKING}/{{track_type}}/tracking_ghost_rate_chi2ndof_scan_{_LABEL}.png",
+            track_type=_TRACK_TYPES,
+        ),
+        chi2_scan_summary=expand(
+            f"{_TRACKING}/{{track_type}}/tracking_performance_chi2ndof_scan_{_LABEL}.png",
             track_type=_TRACK_TYPES,
         ),
         resolution_table=(

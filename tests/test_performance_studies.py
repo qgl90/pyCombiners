@@ -54,6 +54,58 @@ def test_default_efficiency_selections_include_signal_and_any_long():
     assert int(inclusive_p["efficiency_numerator"].sum()) == 2
 
 
+def test_track_chi2ndof_scan_cuts_reco_numerators_only():
+    frame = pd.DataFrame(
+        {
+            "row_type": ["reconstructible"] * 2 + ["long"] * 4,
+            "truth_matched": [False, False, True, True, False, False],
+            "is_unique_truth_match": [False, False, True, True, False, False],
+            "from_signal": [True, False, True, False, False, False],
+            "has_velo": [True] * 6,
+            "has_ut": [False] * 6,
+            "has_mp": [False] * 6,
+            "has_ft": [False] * 6,
+            "has_t": [True] * 6,
+            "truth_pt": [1_000.0, 2_000.0, 1_000.0, 2_000.0, np.nan, np.nan],
+            "truth_eta": [3.0, 3.1, 3.0, 3.1, np.nan, np.nan],
+            "truth_p": [
+                10_000.0,
+                20_000.0,
+                10_000.0,
+                20_000.0,
+                np.nan,
+                np.nan,
+            ],
+            "truth_phi": [0.1, 0.2, 0.1, 0.2, np.nan, np.nan],
+            "reco_pt": [np.nan, np.nan, 1_000.0, 2_000.0, 3_000.0, 4_000.0],
+            "reco_eta": [np.nan, np.nan, 3.0, 3.1, 3.2, 3.3],
+            "reco_p": [np.nan, np.nan, 10_000.0, 20_000.0, 30_000.0, 40_000.0],
+            "reco_phi": [np.nan, np.nan, 0.1, 0.2, 0.3, 0.4],
+            "reco_chi2ndof": [np.nan, np.nan, 9.0, 5.0, 7.0, 3.0],
+        }
+    )
+
+    no_cut = _performance_tables(frame.copy(), "long", [])
+    cut_8 = _performance_tables(frame.copy(), "long", [], 8.0)
+    cut_4 = _performance_tables(frame.copy(), "long", [], 4.0)
+    no_cut_p = no_cut[no_cut["variable"] == "p"]
+    cut_8_p = cut_8[cut_8["variable"] == "p"]
+    cut_4_p = cut_4[cut_4["variable"] == "p"]
+
+    assert int(no_cut_p["efficiency_denominator"].sum()) == 2
+    assert int(cut_8_p["efficiency_denominator"].sum()) == 2
+    assert int(cut_4_p["efficiency_denominator"].sum()) == 2
+    assert int(no_cut_p["efficiency_numerator"].sum()) == 2
+    assert int(cut_8_p["efficiency_numerator"].sum()) == 1
+    assert int(cut_4_p["efficiency_numerator"].sum()) == 0
+    assert int(no_cut_p["fake_numerator"].sum()) == 2
+    assert int(no_cut_p["fake_denominator"].sum()) == 4
+    assert int(cut_8_p["fake_numerator"].sum()) == 2
+    assert int(cut_8_p["fake_denominator"].sum()) == 3
+    assert int(cut_4_p["fake_numerator"].sum()) == 1
+    assert int(cut_4_p["fake_denominator"].sum()) == 1
+
+
 def test_pid_roc_uses_truth_and_rich_selected_species(tmp_path):
     frame = pd.DataFrame(
         {

@@ -44,6 +44,11 @@ contains:
   `phi`;
 - `tracking_performance_binned_0p2e34.parquet`: bin edges, raw numerators/denominators, ratios,
   and binomial uncertainties.
+- `tracking_chi2ndof_scan_binned_0p2e34.parquet`: the same efficiency and ghost-rate counts for
+  no track-quality cut and `chi2/ndof < 8`, `< 6`, and `< 4`;
+- `tracking_ghost_rate_chi2ndof_scan_0p2e34.png`: the four ghost-rate working points;
+- `tracking_performance_chi2ndof_scan_0p2e34.png`: from-signal efficiency, inclusive Any-Long
+  efficiency, and ghost rate in one three-row summary;
 - `momentum_resolution/deltap_over_p_vs_{p,eta,phi}_0p2e34.png`: Gaussian-core momentum
   resolution and bias;
 - `momentum_resolution/momentum_resolution_binned_0p2e34.parquet`: fitted means, widths,
@@ -74,6 +79,12 @@ ghost rate = reconstructed Long tracks without a truth match
              ------------------------------------------------
                      all reconstructed Long tracks
 ```
+
+For the track-`chi2/ndof` scan, the requested cut is applied only to reconstructed tracks. The
+MCReconstructible efficiency denominator is therefore unchanged, while the matched efficiency
+numerator is reduced by the cut. The ghost numerator and its reconstructed-track denominator
+both receive the same cut, so each curve is the ghost fraction of the selected track container.
+Each scan panel retains the no-cut denominator spectrum as a gray filled reference.
 
 The efficiency uses truth kinematics. The ghost-rate numerator and denominator both use
 reconstructed kinematics because an unmatched track has no valid truth particle. Repeated Long
