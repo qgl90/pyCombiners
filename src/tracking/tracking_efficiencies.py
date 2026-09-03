@@ -32,6 +32,8 @@ DEFAULT_EFFICIENCY_SELECTIONS = (
     (),
 )
 
+TRACK_CHI2NDOF_WORKING_POINTS = (None, 8.0, 6.0, 4.0)
+
 TRACK_TYPES = {
     "long": ("has_velo", "has_t"),
     "down": ("has_ut", "has_t"),
@@ -233,10 +235,19 @@ def _ratio(values_num, values_den, bins):
     return numerator, denominator, ratio, uncertainty
 
 
-def _performance_tables(frame, track_type, tags):
+def _performance_tables(frame, track_type, tags, max_track_chi2ndof=None):
     _set_track_type_tags(frame)
     reconstructible = frame[frame["row_type"] == "reconstructible"]
     long_tracks = frame[frame["row_type"] == "long"]
+    if max_track_chi2ndof is None:
+        passes_track_quality = np.ones(len(long_tracks), dtype=bool)
+        track_quality_label = "no cut"
+    else:
+        track_chi2ndof = long_tracks["reco_chi2ndof"].to_numpy(dtype=float)
+        passes_track_quality = np.isfinite(track_chi2ndof) & (
+            track_chi2ndof < max_track_chi2ndof
+        )
+        track_quality_label = f"chi2/ndof < {max_track_chi2ndof:g}"
 
     denominator = reconstructible[
         _selection(reconstructible, track_type, tags)
@@ -245,8 +256,12 @@ def _performance_tables(frame, track_type, tags):
         long_tracks["truth_matched"]
         & long_tracks["is_unique_truth_match"]
         & _selection(long_tracks, track_type, tags)
+        & passes_track_quality
     ]
-    fake_numerator = long_tracks[~long_tracks["truth_matched"]]
+    selected_long_tracks = long_tracks[passes_track_quality]
+    fake_numerator = selected_long_tracks[
+        ~selected_long_tracks["truth_matched"]
+    ]
 
     definitions = {
         "pt": (
@@ -283,7 +298,7 @@ def _performance_tables(frame, track_type, tags):
         )
         n_fake, d_fake, fake_rate, fake_rate_err = _ratio(
             fake_numerator[reco_field].dropna(),
-            long_tracks[reco_field].dropna(),
+            selected_long_tracks[reco_field].dropna(),
             bins,
         )
         for index in range(len(bins) - 1):
@@ -291,6 +306,8 @@ def _performance_tables(frame, track_type, tags):
                 {
                     "track_type": track_type,
                     "selection_tags": ",".join(tags),
+                    "track_chi2ndof_max": max_track_chi2ndof,
+                    "track_quality_label": track_quality_label,
                     "variable": variable,
                     "bin_low": bins[index] * scale,
                     "bin_high": bins[index + 1] * scale,
@@ -370,6 +387,134 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
             axis.legend(loc="lower right")
             distribution_axis.legend(loc="upper right", fontsize=8)
     fig.suptitle(f"{ylabel.removesuffix(' [%]')} ({selection_label})")
+    fig.tight_layout()
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _draw_track_quality_panel(
+    axis,
+    table,
+    variable,
+    value,
+    uncertainty,
+    denominator_field,
+    selection_tags,
+    ylabel,
+):
+    selected = table[
+        (table["variable"] == variable)
+        & (table["selection_tags"] == selection_tags)
+    ]
+    distribution_axis = axis.twinx()
+    no_cut = selected[selected["track_quality_label"] == "no cut"]
+    distribution_edges = np.linspace(
+        no_cut["bin_low"].iloc[0], no_cut["bin_high"].iloc[-1], 100
+    )
+    distribution_axis.stairs(
+        no_cut[denominator_field],
+        distribution_edges,
+        fill=True,
+        color="gray",
+        alpha=0.18,
+    )
+    for quality_label in selected["track_quality_label"].drop_duplicates():
+        points = selected[selected["track_quality_label"] == quality_label]
+        centers = 0.5 * (points["bin_low"] + points["bin_high"])
+        axis.errorbar(
+            centers,
+            100.0 * points[value],
+            yerr=100.0 * points[uncertainty],
+            fmt="o-",
+            markersize=3,
+            linewidth=1,
+            capsize=1,
+            label=quality_label,
+        )
+    axis.set_xlabel(KINEMATIC_LABELS[variable])
+    axis.set_ylabel(ylabel)
+    axis.set_ylim(0.0, 105.0)
+    axis.grid(True, alpha=0.3)
+    axis.legend(fontsize=8)
+    distribution_axis.set_ylabel("No-cut denominator / bin", color="0.4")
+    distribution_axis.tick_params(axis="y", colors="0.4")
+    distribution_axis.set_ylim(bottom=0.0)
+    distribution_axis.set_zorder(0)
+    axis.set_zorder(1)
+    axis.patch.set_visible(False)
+
+
+def _plot_track_quality_metric(
+    table,
+    value,
+    uncertainty,
+    denominator_field,
+    selection_tags,
+    ylabel,
+    title,
+    output,
+):
+    import matplotlib.pyplot as plt
+
+    from trackcomb.plot import make_figure
+
+    variables = ("pt", "eta", "p", "phi")
+    fig, axes = make_figure(1, len(variables), figsize=(28, 6))
+    for axis, variable in zip(axes, variables):
+        _draw_track_quality_panel(
+            axis,
+            table,
+            variable,
+            value,
+            uncertainty,
+            denominator_field,
+            selection_tags,
+            ylabel,
+        )
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(output, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_track_quality_summary(table, track_type, label, output):
+    import matplotlib.pyplot as plt
+
+    from trackcomb.plot import make_figure
+
+    variables = ("pt", "eta", "p", "phi")
+    rows = (
+        (
+            "efficiency",
+            "efficiency_uncertainty",
+            "efficiency_denominator",
+            "from_signal",
+            "From-signal efficiency [%]",
+        ),
+        (
+            "efficiency",
+            "efficiency_uncertainty",
+            "efficiency_denominator",
+            "",
+            "Any-Long efficiency [%]",
+        ),
+        (
+            "fake_rate",
+            "fake_rate_uncertainty",
+            "fake_denominator",
+            "",
+            "Ghost rate [%]",
+        ),
+    )
+    fig, axes = make_figure(
+        len(rows), len(variables), figsize=(28, 17), squeeze=False
+    )
+    for row_axes, row in zip(axes, rows):
+        for axis, variable in zip(row_axes, variables):
+            _draw_track_quality_panel(axis, table, variable, *row)
+    fig.suptitle(
+        f"{label}: {track_type} tracking performance vs track chi2/ndof cut"
+    )
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -757,6 +902,45 @@ def _infer_label(dataframe_path):
     return stem
 
 
+def make_track_quality_scan_plots(
+    frame,
+    plot_dir,
+    track_type,
+    label,
+    working_points=TRACK_CHI2NDOF_WORKING_POINTS,
+):
+    """Scan reconstructed-track chi2/ndof cuts for efficiency and ghosts."""
+    tables = []
+    for tags in DEFAULT_EFFICIENCY_SELECTIONS:
+        for maximum in working_points:
+            tables.append(
+                _performance_tables(
+                    frame.copy(), track_type, tags, max_track_chi2ndof=maximum
+                )
+            )
+    table = pd.concat(tables, ignore_index=True)
+    table["sample_label"] = label
+    suffix = f"_{label}" if label else ""
+    table_path = plot_dir / f"tracking_chi2ndof_scan_binned{suffix}.parquet"
+    ghost_path = plot_dir / f"tracking_ghost_rate_chi2ndof_scan{suffix}.png"
+    summary_path = plot_dir / f"tracking_performance_chi2ndof_scan{suffix}.png"
+    table.to_parquet(table_path, index=False)
+    _plot_track_quality_metric(
+        table,
+        "fake_rate",
+        "fake_rate_uncertainty",
+        "fake_denominator",
+        "",
+        "Ghost rate [%]",
+        f"{label}: reconstructed Long-track ghost rate vs track chi2/ndof cut",
+        ghost_path,
+    )
+    _plot_track_quality_summary(table, track_type, label, summary_path)
+    print(f"Saved {table_path}")
+    print(f"Saved {ghost_path}")
+    print(f"Saved {summary_path}")
+
+
 def make_plots(dataframe_path, plot_dir, track_type, tags=None, label=None):
     """Read the produced Parquet and write efficiency/fake-rate products."""
     frame = pd.read_parquet(dataframe_path)
@@ -800,6 +984,7 @@ def make_plots(dataframe_path, plot_dir, track_type, tags=None, label=None):
     print(f"Saved {table_path}")
     print(f"Saved {efficiency_path}")
     print(f"Saved {ghost_path}")
+    make_track_quality_scan_plots(frame, plot_dir, track_type, label)
 
 
 def main():
