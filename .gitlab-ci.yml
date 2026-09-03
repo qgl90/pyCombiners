@@ -67,6 +67,7 @@ unit-tests:
           - ks_to_pipi
           - bs_to_jpsiphi
           - bs_to_mumu
+          - performance_studies
   artifacts:
     paths:
       - public/*/analysis/
