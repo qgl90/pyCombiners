@@ -18,8 +18,9 @@ From the repository root:
   --plot-dir bs_jpsi_phi_tracking
 ```
 
-The default efficiency selection is track type `long` plus `from_signal`. The available track-type
-definitions are:
+By default, the efficiency figure contains two curves: `from_signal` and the inclusive
+`any Long` population. Both use the selected track-type requirement consistently in the
+numerator and denominator. The available track-type definitions are:
 
 ```text
 long   = has_velo & has_t
@@ -130,6 +131,8 @@ PYTHONPATH=src python3 src/tracking/tracking_efficiencies.py \
 
 The additional tags available consistently on MCReconstructible particles and matched Long-track
 truth are `from_signal`, `positive_charge`, `negative_charge`, `from_beauty`, and `from_charm`.
+Supplying `--selection-tags` explicitly replaces the two-curve default with the requested AND
+selection.
 The primitive acceptance flags and all four derived track-type columns are retained in the main
 Parquet. The input also provides `from_strange` on MCReconstructible particles, but no directly
 equivalent matched-Long field exists. It is stored as `from_strange_reconstructible` only on

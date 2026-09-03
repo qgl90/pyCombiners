@@ -27,6 +27,11 @@ COMMON_TAGS = (
     "from_charm",
 )
 
+DEFAULT_EFFICIENCY_SELECTIONS = (
+    ("from_signal",),
+    (),
+)
+
 TRACK_TYPES = {
     "long": ("has_velo", "has_t"),
     "down": ("has_ut", "has_t"),
@@ -314,43 +319,56 @@ def _plot_metric(table, value, uncertainty, ylabel, output, selection_label):
     }[value]
     fig, axes = make_figure(1, len(variables), figsize=(28, 6))
     for axis, variable in zip(axes, variables):
-        points = table[table["variable"] == variable]
-        centers = 0.5 * (points["bin_low"] + points["bin_high"])
-        widths = 0.5 * (points["bin_high"] - points["bin_low"])
-        distribution_edges = np.linspace(
-            points["bin_low"].iloc[0], points["bin_high"].iloc[-1], 100
-        )
         distribution_axis = axis.twinx()
-        distribution_axis.stairs(
-            points[denominator_field],
-            distribution_edges,
-            fill=True,
-            color="gray",
-            alpha=0.20,
-        )
+        selections = table["selection_tags"].drop_duplicates().tolist()
+        for selection_index, selection in enumerate(selections):
+            points = table[
+                (table["variable"] == variable)
+                & (table["selection_tags"] == selection)
+            ]
+            centers = 0.5 * (points["bin_low"] + points["bin_high"])
+            widths = 0.5 * (points["bin_high"] - points["bin_low"])
+            distribution_edges = np.linspace(
+                points["bin_low"].iloc[0],
+                points["bin_high"].iloc[-1],
+                100,
+            )
+            category_label = (
+                selection.replace("_", " ") if selection else "any long"
+            )
+            distribution_axis.stairs(
+                points[denominator_field],
+                distribution_edges,
+                fill=True,
+                color="gray",
+                alpha=0.18,
+                hatch=(None, "//")[selection_index % 2],
+                label=f"{category_label} denominator",
+            )
+            axis.errorbar(
+                centers,
+                100.0 * points[value],
+                xerr=widths,
+                yerr=100.0 * points[uncertainty],
+                fmt="o",
+                capsize=2,
+                label=category_label,
+                ms = 1 ,
+                elinewidth=1
+            )
         distribution_axis.set_ylabel("Denominator entries / bin", color="0.4")
         distribution_axis.tick_params(axis="y", colors="0.4")
         distribution_axis.set_ylim(bottom=0.0)
         distribution_axis.set_zorder(0)
         axis.set_zorder(1)
         axis.patch.set_visible(False)
-        axis.errorbar(
-            centers,
-            100.0 * points[value],
-            xerr=widths,
-            yerr=100.0 * points[uncertainty],
-            fmt="o",
-            capsize=2,
-            ms = 1 ,
-            color="black",         # marker face
-            ecolor="black",        # error-bar lines
-            markeredgecolor="black",
-            elinewidth=1
-        )
         axis.set_xlabel(KINEMATIC_LABELS[variable])
         axis.set_ylabel(ylabel)
         axis.set_ylim(0.0, 105.0)
         axis.grid(True, alpha=0.3)
+        if len(selections) > 1:
+            axis.legend(loc="lower right")
+            distribution_axis.legend(loc="upper right", fontsize=8)
     fig.suptitle(f"{ylabel.removesuffix(' [%]')} ({selection_label})")
     fig.tight_layout()
     fig.savefig(output, dpi=150, bbox_inches="tight")
@@ -739,10 +757,17 @@ def _infer_label(dataframe_path):
     return stem
 
 
-def make_plots(dataframe_path, plot_dir, track_type, tags, label=None):
+def make_plots(dataframe_path, plot_dir, track_type, tags=None, label=None):
     """Read the produced Parquet and write efficiency/fake-rate products."""
     frame = pd.read_parquet(dataframe_path)
-    table = _performance_tables(frame, track_type, tags)
+    tag_sets = (
+        DEFAULT_EFFICIENCY_SELECTIONS if tags is None else (tuple(tags),)
+    )
+    tables = [
+        _performance_tables(frame.copy(), track_type, selection)
+        for selection in tag_sets
+    ]
+    table = pd.concat(tables, ignore_index=True)
     plot_dir = Path(plot_dir)
     plot_dir.mkdir(parents=True, exist_ok=True)
     label = label or _infer_label(dataframe_path)
@@ -758,10 +783,14 @@ def make_plots(dataframe_path, plot_dir, track_type, tags, label=None):
         "efficiency_uncertainty",
         "Tracking efficiency [%]",
         efficiency_path,
-        f"{label}: " + " & ".join((track_type, *tags)),
+        (
+            f"{label}: {track_type}, signal and inclusive"
+            if tags is None
+            else f"{label}: " + " & ".join((track_type, *tags))
+        ),
     )
     _plot_metric(
-        table,
+        tables[0],
         "fake_rate",
         "fake_rate_uncertainty",
         "Ghost rate [%]",
@@ -815,8 +844,11 @@ def main():
         "--selection-tags",
         nargs="*",
         choices=COMMON_TAGS,
-        default=["from_signal"],
-        help="additional ANDed truth tags; pass with no values for inclusive",
+        default=None,
+        help=(
+            "additional ANDed truth tags; by default plot from_signal and "
+            "any Long track, or pass with no values for inclusive only"
+        ),
     )
     parser.add_argument(
         "--list-tags", action="store_true", help="print common selectable tags"
