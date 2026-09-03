@@ -7,11 +7,51 @@ from pid.performance import PIDPerformance
 from tracking.compare_tracking_efficiencies import _integrated_summary
 from tracking.tracking_efficiencies import _set_track_type_tags
 from tracking.tracking_efficiencies import (
+    DEFAULT_EFFICIENCY_SELECTIONS,
     _fit_gaussian_core,
     _gaussian_core_fit,
     _momentum_resolution_table,
     _performance_tables,
 )
+
+
+def test_default_efficiency_selections_split_signal_origin():
+    assert DEFAULT_EFFICIENCY_SELECTIONS == (
+        ("from_signal",),
+        ("not_from_signal",),
+    )
+
+    frame = pd.DataFrame(
+        {
+            "row_type": ["reconstructible", "reconstructible", "long", "long"],
+            "truth_matched": [False, False, True, True],
+            "is_unique_truth_match": [False, False, True, True],
+            "from_signal": [True, False, True, False],
+            "has_velo": [True] * 4,
+            "has_ut": [False] * 4,
+            "has_mp": [False] * 4,
+            "has_ft": [False] * 4,
+            "has_t": [True] * 4,
+            "truth_pt": [1_000.0, 2_000.0, 1_000.0, 2_000.0],
+            "truth_eta": [3.0, 3.1, 3.0, 3.1],
+            "truth_p": [10_000.0, 20_000.0, 10_000.0, 20_000.0],
+            "truth_phi": [0.1, 0.2, 0.1, 0.2],
+            "reco_pt": [np.nan, np.nan, 1_000.0, 2_000.0],
+            "reco_eta": [np.nan, np.nan, 3.0, 3.1],
+            "reco_p": [np.nan, np.nan, 10_000.0, 20_000.0],
+            "reco_phi": [np.nan, np.nan, 0.1, 0.2],
+        }
+    )
+
+    signal = _performance_tables(frame.copy(), "long", ["from_signal"])
+    background = _performance_tables(frame.copy(), "long", ["not_from_signal"])
+    signal_p = signal[signal["variable"] == "p"]
+    background_p = background[background["variable"] == "p"]
+
+    assert int(signal_p["efficiency_denominator"].sum()) == 1
+    assert int(signal_p["efficiency_numerator"].sum()) == 1
+    assert int(background_p["efficiency_denominator"].sum()) == 1
+    assert int(background_p["efficiency_numerator"].sum()) == 1
 
 
 def test_pid_roc_uses_truth_and_rich_selected_species(tmp_path):
