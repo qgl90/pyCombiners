@@ -1,209 +1,306 @@
-# Track Combination Framework
+# pyCombiners  [![pipeline status](https://gitlab.cern.ch/rquaglia/pyCombiners/badges/main/pipeline.svg)](https://gitlab.cern.ch/rquaglia/pyCombiners/-/commits/main)
 
-Event-level particle-combination framework for track containers and PV containers.
 
-## Core Concepts
+This is more like a MooreAnalysis framework for Upgrade II trigger studies.
 
-- `TrackState`: `(x, y, tx, ty, time)` at `z`, with `cov4(x,y,tx,ty)`, `sigma_time`, momentum `p`
-- Track charge support: `charge` in `{+1, -1}` (or `0` if needed)
-- Optional per-track PID-like info:
-  - `hasRICH1`, `hasRICH2`
-  - `richDLL_pi`, `richDLL_k`, `richDLL_p`, `richDLL_e`
-  - `hasCALO`, `caloDLL_e`
-- `PrimaryVertex`: `pv_id, x, y, z, cov3, time, sigma_time`
-- `ParticleCombiner`: builds 2/3/4-body combinations from tracks
-- Named particle hypotheses:
-  - `make_pion`, `make_kaon`, `make_proton`, `make_muon`, `make_electron`
-  - pass these directly in `mass_hypotheses`
-- Hierarchical/staged combinations via `combination_to_track_state(...)`:
-  - treat accepted combination outputs as new track-like objects
-  - preserve source-track provenance (`source_track_ids`)
-  - reuse them in higher-level decay chains
-- 4D vertexing: fit `(x, y, z, time)` per candidate
-- Time propagation uses mass-dependent `beta = p/sqrt(p^2 + m^2)` when evaluating timing chi2
-- Pair/candidate metrics: DOCA, vertex chi2, mass, pair `pT`, pair `eta`, timing chi2
-- Track preselection: `pT`, `eta`, minimum IP wrt all PVs in event
+The idea is to allow users to create complex decay chains on top of U2 reconstruction, using
+Moore-like syntax in Python scripts, and also create final tuples to perform physics analysis.
 
-## Install (Optional)
+The final tuple can be stored in any format you want: ROOT, parquet, json, ...etc.
+
+The core library is located in `src/`, while the decay chain reconstruction scripts are stored in
+`physics/reconstruction/` and the scripts that analyze the output of reconstruction to make plots
+and conclusions are stored in `physics/analysis/`.
+
+A central pipeline is configured with `snakemake`, it is used to connect the reconstruction output
+to the input of analysis. But you can always run stuff separately with all the flexibility of
+configuring your own pipeline for your study.
+
+## Project Structure
+
+```
+pyCombiners/
+├── src/trackcomb/              # Core Python package (combiner, physics, IO, truth, ...)
+├── physics/
+│   ├── reconstruction/         # Reconstruction scripts (one per decay channel)
+│   └── analysis/               # Analysis/plotting scripts (organized by study type)
+├── workflow/                   # One snakefile per pipeline (--snakefile workflow/<name>.smk)
+├── tests/                      # pytest test suite
+├── models/                     # ONNX MVA model files
+├── scripts/                    # Utility scripts (ONNX conversion, fixture generation, ...)
+├── config/                     # One yaml per pipeline (inputs, event counts)
+└── environment.yaml            # Conda environment definition
+```
+
+## Input Format
+
+The design philosophy of this project is "KISS", keep it simple and stupid. Our reconstruction
+data is dumped in one `EventTuple` TTree per file, where all information is stored in a SoA
+format without introducing new C++ structs. Each entry corresponds to an event, each property is
+a `std::vector<T>` branch, and branches are organized in two-level `Group/leaf` names:
+
+```
+BestLongState_FirstMeasurement/{x, y, z, tx, ty, qop, cov_i_j, ...}
+BestLongMC/{pid, key, pv_key, fromSignal, ancestor_pids, n_ancestors, ...}
+BestLongRich/{DLL_Muon, DLL_Kaon, ..., hasRICHInfo}
+BestLongTVHits/{n, id, x, y, z, t}          # per-hit lists, sized by n
+PVState/..., PVMC/..., EventInfo/...
+ReconstructibleTracks/..., PicoCalClusters*/...
+```
+
+Multi-level information (hits per track, ancestors per track) uses a flat vector + size vector,
+recovered with `ak.unflatten`. The component loaders handle all of this.
+
+**Important**: leaf basenames repeat across groups (`x` appears in many groups), so branches
+must be read by their **full path** (`tree["BestLongTVHits/x"]`). Never use uproot
+`filter_name`/wildcard reads on this format — same-named leaves get silently merged.
+
+## Units
+
+All quantities follow native LHCb conventions: momentum, mass and energy in **MeV**, spatial
+coordinates in **mm**, time in **ns**.
+
+## Event Model
+
+Since our data is loaded as a big Dict, it is natural to design our event model to the philosophy:
+**EVERYTHING IS Dict**.
+
+The container of tracks is a Dict, the container of secondary vertices is a Dict, the container
+of PVs is a Dict, everything is a Dict.
+
+The advantage of this design is we can easily add new information to the Dict. One example would
+be to associate best PV to each track:
+
+```python
+tracks = load_tracks_from_event(...)
+pvs = load_pvs(...)
+
+tracks_pv_association(tracks, pvs, max_dt_chi2=3.5)
+```
+
+In this example, `tracks_pv_association` will create new keys in the tracks dict, so variables
+like `min_ip`, `min_ip_chi2`, `pv_on_time`, and `best_pv_x/y/z` become
+available. The timing requirement first defines the eligible PV subset; IP and
+best PV are then evaluated on that subset. Passing neither `max_dt` nor
+`max_dt_chi2` keeps all PVs and therefore gives the spatial-only association.
+
+Then the selection of tracks becomes something very simple:
+
+```python
+good_tracks = apply_cuts(tracks, [cut_min_ip(threshold, dt_chi2=3.5)])
+```
+
+This Dict design also allows us to define different cuts easily without relying on any Functor
+framework. Just use the built-in cut helpers:
+
+```python
+from trackcomb import cut_min, cut_max, cut_max_ip_chi2, cut_range
+
+my_cuts = [
+    cut_min("pt", 500),  # pt >= 500 MeV
+    cut_max_ip_chi2(16, dt_chi2=3.5),  # timed-PV IP chi2 <= 16
+    cut_range("mass", 470, 520),  # mass in [470, 520] MeV
+]
+```
+
+Or just use a lambda for anything more complex:
+
+```python
+my_cuts = [
+    cut_min("pt", 500),
+    lambda c: c["daughter0_pt"] + c["daughter1_pt"] > 1000,  # sum pt cut
+    lambda c: c["mass"] - 498 < 20,  # asymmetric mass window
+]
+```
+
+## Decay Chain Reconstruction
+
+The core of this framework is the `combine()` function. It takes track pools and PVs, builds all
+combinations, performs vertex fit, timing fit, computes kinematics, associates best PV, and
+propagates MC truth. All in one call, fully vectorized over events and candidates.
+
+See [docs/physics.md](docs/physics.md) for the detailed formulas (IP, vertex fit, DOCA, time fit,
+DIRA, fdchi2, mcor, etc).
+
+A typical reconstruction script looks like this:
+
+```python
+from functools import partial
+
+from trackcomb import (
+    event_stream,
+    load_tracks,
+    load_pvs,
+    load_event_info,
+    set_tracks_pid,
+    apply_mask,
+    tracks_pv_association,
+    combine,
+    composite_pv_association,
+    cut_min,
+    cut_max,
+    cut_range,
+    candidates_to_dataframe,
+    set_composite_pid,
+)
+
+for chunk in event_stream("input/1p0E34_Bs_mumu/*.root", chunk_size=100):
+    # Load only what you need (hits/rich/mc are switchable kwargs)
+    tracks = load_tracks(chunk)  # hits=("TVHits",), rich=True, mc=True
+    pvs = load_pvs(chunk)
+    info = load_event_info(chunk)
+
+    # Track-PV association, mass hypothesis
+    tracks_pv_association(tracks, pvs, max_dt_chi2=3.5)
+    set_tracks_pid(tracks, "mu+")
+    pos = apply_mask(tracks, tracks["charge"] > 0)
+    neg = apply_mask(tracks, tracks["charge"] < 0)
+
+    # Combine
+    candidates = combine(
+        [pos, neg],
+        pvs,
+        track_cuts=[cut_min("pt", 1000), cut_min("rich_dll_muon", -5)],
+        combination_cuts=[
+            cut_max("max_doca", 0.05),
+            cut_range("mass", 4700, 6000),
+        ],
+        composite_cuts=[cut_max("vertex_chi2", 4)],
+        final_cuts=[cut_min("dira", 0.9995)],
+        pv_function=partial(composite_pv_association, max_dt_chi2=3.5),
+        require_common_pv_on_time=True,
+    )
+    if candidates is None:
+        continue
+    set_composite_pid(candidates, "B(s)0")
+    df = candidates_to_dataframe(candidates)
+    ...
+```
+
+For production use, wrap the per-chunk logic in a function and let
+`run_reconstruction(fn, input_path, out="bs.parquet")` drive the loop — it streams results
+into a single Parquet file with constant memory, handles wildcards and skips corrupt files.
+
+The output candidates are also Dicts, with track-compatible fields (`x`, `y`, `z`, `tx`, `ty`,
+`p`, `charge`, `time`, `track_id`, covariance). This means candidates can be fed back into
+another `combine()` call to build hierarchical decays.
+
+## Truth Matching
+
+MC truth is propagated automatically by `combine()`, each candidate gets `mc_truth`, `mc_pid`,
+`mc_key`, `mc_fromsignal`, and full ancestor chains. The framework also provides an LHCb-style
+`bkgcat()` function that classifies candidates into Signal, QuasiSignal, Ghost, Clone, Reflection,
+Pileup, FromB, FromC, etc.
+
+See [docs/truth_matching.md](docs/truth_matching.md) for the full documentation and category
+decision tree.
+
+## Installation
 
 ```bash
+# Create the conda environment
+conda env create -n pyCombiner -f environment.yaml
+conda activate pyCombiner
+
+# Install the package in development mode
 pip install -e .
 ```
 
-## Run Without Install
+## Input Data
+
+Input ntuples are not tracked in git. The current samples live at
+`/shared/jzhuo/run5/renato_test_middle-scenario-June2026-RichV3/<sample>/*.root`
+(EventTuple format, 100 events per file). Small local subsets can be merged into
+`input/` with hadd:
 
 ```bash
-PYTHONPATH=src python -m trackcomb \
-  --tracks examples/tracks.json \
-  --primary-vertices examples/primary_vertex.json \
-  --masses examples/masses_2body.json \
-  --n-body 2 \
-  --out output_2body.parquet
+hadd input/eventtuple_bsmumu_1p0e34_1000evts.root \
+     $(ls /shared/.../1p0E34_Bs_mumu/*.root | head -10)
 ```
 
-Plain local script (no installation):
+## Running the Pipelines
+
+Each pipeline is a standalone snakefile under `workflow/` with its own config
+under `config/` — flat keys, no coupling between pipelines:
+
+```yaml
+# config/bs_to_mumu.yaml
+output_dir: public/bs_to_mumu
+input: input/eventtuple_bsmumu_1p0e34_1000evts.root
+max_events_full: 1000
+```
+
+Each pipeline owns its output directory: parquets go to
+`<output_dir>/reconstruction/` and plots to `<output_dir>/analysis/`
+(one sub-directory per study when a pipeline has several). Overriding
+`output_dir` relocates the whole tree.
+
+Input paths may contain wildcards — corrupt files are skipped with a warning.
+The committed configs are the default mode of each pipeline; anything else
+(quick tests, other samples/luminosities) is a command-line override or a
+private yaml:
+
+The five pipelines are `bs_to_phigamma`, `calo_study`, `bs_to_mumu`,
+`ks_to_pipi` and `bs_to_jpsiphi`:
 
 ```bash
-PYTHONPATH=src python examples/multi_event_api.py
+snakemake --snakefile workflow/bs_to_phigamma.smk -c16
+snakemake --snakefile workflow/calo_study.smk -c16
+snakemake --snakefile workflow/bs_to_mumu.smk -c8
+
+# Dry-run to check the DAG
+snakemake --snakefile workflow/bs_to_phigamma.smk -n
+
+# Quick test: cap events, redirect output
+snakemake --snakefile workflow/bs_to_phigamma.smk -c8 \
+    --config max_events=1000 output_dir=public/test
+
+# Big/custom job: bring your own config (e.g. another luminosity)
+snakemake --snakefile workflow/bs_to_mumu.smk -c16 --configfile my_1p5e34.yaml
 ```
 
-Documentation webpage (local):
+Reconstruction rules take all cores of the invocation (`--workers` = snakemake
+`threads`); analysis rules are single-core so snakemake runs them in parallel.
+
+You can also run reconstruction scripts directly (wildcards allowed in --input):
 
 ```bash
-python3 -m http.server 8080 --directory docs/web
-# open http://localhost:8080
+PYTHONPATH=src python3 physics/reconstruction/bs_to_mumu.py \
+    --mode full \
+    --input input/eventtuple_bsmumu_1p0e34_1000evts.root \
+    --max-events 1000 \
+    --out-dir output/
 ```
 
-## CLI Example With Cuts
+## Continuous Integration
 
-```bash
-track-combiner \
-  --tracks examples/tracks.json \
-  --primary-vertices examples/primary_vertex.json \
-  --masses examples/masses_3body.json \
-  --n-body 3 \
-  --min-track-pt 0.5 \
-  --min-track-ip-to-any-pv 0.05 \
-  --max-doca 1.0 \
-  --max-vertex-chi2 200.0 \
-  --max-pair-time-chi2 10.0 \
-  --min-mass 0.2 \
-  --max-mass 10.0 \
-  --min-pair-pt 0.02 \
-  --allowed-charge-patterns "+-,-+" \
-  --out output_3body.parquet
-```
+Besides formatting and unit tests (shared runners), every merge request runs
+all five pipelines as 1k-event smoke jobs on a dedicated shell runner
+(tag `pyCombiner-cpu`). The jobs use `--configfile ci/<pipeline>.yaml` to
+point at local copies of the inputs under `/data/ci/input/` on the runner VM;
+`ci/ensure_env.sh` rebuilds the micromamba env whenever `environment.yaml`
+changes. The `analysis/` plots and all logs are kept as job artifacts —
+7 days for merge requests, forever on `main`.
 
-## Event Mode (Tracks + PV List)
+## Plotting
 
-One event typically has:
-
-- `tracks[event]`: list of track states
-- `pvs[event]`: list of primary vertices
-
-Python API:
+The framework provides a `make_figure()` helper that sets up LHCb2 style and adds a version
+watermark. It's a drop-in replacement for `plt.subplots()`:
 
 ```python
-from trackcomb import CombinationCuts, ParticleCombiner, PrimaryVertex, TrackPreselection, TrackState
+from trackcomb import make_figure
 
-tracks: list[TrackState] = ...
-pvs: list[PrimaryVertex] = ...
-
-combiner = ParticleCombiner()
-results = combiner.combine(
-    tracks=tracks,
-    primary_vertices=pvs,
-    n_body=3,
-    mass_hypotheses=[[0.13957, 0.13957, 0.13957]],
-    preselection=TrackPreselection(min_pt=0.5, min_ip_to_any_pv=0.05),
-    cuts=CombinationCuts(max_doca=1.0, min_mass=0.2, max_mass=10.0),
-)
+fig, ax = make_figure()
+ax.hist(df["mass"], bins=100)
+fig.savefig("mass.png")
 ```
 
-Multi-event API (`event -> tracks + PVs`):
+The version label (e.g. "pyCombiners v0.1.0") is read automatically from the installed package
+metadata via `trackcomb.__version__`.
 
-```python
-from trackcomb import EventInput, ParticleCombiner, make_kaon, make_pion
-
-events: list[EventInput] = ...
-results = ParticleCombiner().combine_events(
-    events=events,
-    n_body=2,
-    mass_hypotheses=[[make_kaon(), make_pion()]],
-)
-```
-
-Multi-event CLI:
+## Running Tests
 
 ```bash
-PYTHONPATH=src python -m trackcomb \
-  --events examples/events.json \
-  --masses examples/masses_pid_2body.json \
-  --n-body 2 \
-  --out output_events_2body.parquet
+pip install -e . --no-deps
+pytest tests/ -v
 ```
-
-## Stepwise Decay Chains (Composite -> Track Abstraction)
-
-Example script:
-- `/Users/renato/Documents/New project/pyCombiners/examples/stepwise_decay_examples.py`
-
-This demonstrates:
-1. `J/psi -> mu mu` (2-body)
-2. Convert accepted `J/psi` candidates to track-like composites
-3. Build `B -> J/psi K` by combining composite `J/psi` with kaon tracks
-4. Build `Phi -> K K`, convert to composite tracks
-5. Build `B -> J/psi Phi` from two composite candidates
-
-## Write Your Own Channel Script (Template)
-
-Template script:
-- `/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py`
-
-Run:
-
-```bash
-PYTHONPATH=src python3 examples/new_decay_channel_template.py \
-  --input-events examples/events.json \
-  --output examples/custom_channel_output.parquet \
-  --channel dplus_kpipi
-```
-
-Synthetic B walkthrough:
-
-```bash
-PYTHONPATH=src python3 examples/b_jpsi_kstar_fake_and_combine.py \
-  --n-events 1000 \
-  --signal-fraction 0.20 \
-  --out-candidates examples/output_bjpsikstar_candidates.parquet
-
-python3 examples/b_jpsi_kstar_study.py \
-  --input examples/output_bjpsikstar_candidates.parquet \
-  --out-dir examples/output_bjpsikstar_study \
-  --b-min-mev 5000 \
-  --b-max-mev 6000
-```
-
-## Output Fields (Per Combination)
-
-- `vertex_xyz`, `vertex_time`
-- `vertex_cov_xyz`, `vertex_sigma_time`
-- `vertex_chi2`, `vertex_time_chi2`, `pair_time_chi2`
-- `doca_pairs` (`doca12`, `doca13`, ...)
-- `candidate_p4` (`px,py,pz,e,mass`)
-- `pair_pt`, `pair_eta`
-- `track_min_ip`, `track_min_ip_chi2`
-- `track_pid_info` (RICH/CALO fields propagated from input tracks)
-- `charge_pattern`, `total_charge`
-- `source_track_ids` (provenance of original input tracks)
-- `event_id`
-- `particle_hypotheses`
-- `best_pv_id`
-
-Output is written as a tabular file based on extension:
-- `.parquet` (recommended)
-- `.csv`
-- `.pkl`
-
-## Examples and Tutorial
-
-- Mini tutorial: `/Users/renato/Documents/New project/pyCombiners/docs/mini_tutorial.md`
-- Docs webpage: `/Users/renato/Documents/New project/pyCombiners/docs/web/index.html`
-- B walkthrough: `/Users/renato/Documents/New project/pyCombiners/docs/b_jpsi_kstar_walkthrough.md`
-- Table inspection helper: `/Users/renato/Documents/New project/pyCombiners/examples/inspect_table.py`
-- Peak/SB study helper: `/Users/renato/Documents/New project/pyCombiners/examples/peak_study.py`
-- Multi-event API example: `/Users/renato/Documents/New project/pyCombiners/examples/multi_event_api.py`
-- New channel template: `/Users/renato/Documents/New project/pyCombiners/examples/new_decay_channel_template.py`
-- B walkthrough scripts:
-  - `/Users/renato/Documents/New project/pyCombiners/examples/b_jpsi_kstar_fake_and_combine.py`
-  - `/Users/renato/Documents/New project/pyCombiners/examples/b_jpsi_kstar_study.py`
-- Physics review notes: `/Users/renato/Documents/New project/pyCombiners/docs/physics_review.md`
-- Custom scripts:
-  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_analysis.py`
-  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_scripts/top_candidates.py`
-  - `/Users/renato/Documents/New project/pyCombiners/examples/custom_scripts/filter_and_dump.py`
-
-## CI (GitLab)
-
-- Pipeline: `/Users/renato/Documents/New project/pyCombiners/.gitlab-ci.yml`
-- GitHub Actions: `/Users/renato/Documents/New project/pyCombiners/.github/workflows/ci.yml`

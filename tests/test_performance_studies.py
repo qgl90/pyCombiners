@@ -1,0 +1,250 @@
+"""Unit tests for the PID and tracking performance dataframe analyses."""
+
+import numpy as np
+import pandas as pd
+
+from pid.performance import PIDPerformance
+from tracking.compare_tracking_efficiencies import _integrated_summary
+from tracking.tracking_efficiencies import _set_track_type_tags
+from tracking.tracking_efficiencies import (
+    DEFAULT_EFFICIENCY_SELECTIONS,
+    _fit_gaussian_core,
+    _gaussian_core_fit,
+    _momentum_resolution_table,
+    _performance_tables,
+)
+
+
+def test_default_efficiency_selections_include_signal_and_any_long():
+    assert DEFAULT_EFFICIENCY_SELECTIONS == (
+        ("from_signal",),
+        (),
+    )
+
+    frame = pd.DataFrame(
+        {
+            "row_type": ["reconstructible", "reconstructible", "long", "long"],
+            "truth_matched": [False, False, True, True],
+            "is_unique_truth_match": [False, False, True, True],
+            "from_signal": [True, False, True, False],
+            "has_velo": [True] * 4,
+            "has_ut": [False] * 4,
+            "has_mp": [False] * 4,
+            "has_ft": [False] * 4,
+            "has_t": [True] * 4,
+            "truth_pt": [1_000.0, 2_000.0, 1_000.0, 2_000.0],
+            "truth_eta": [3.0, 3.1, 3.0, 3.1],
+            "truth_p": [10_000.0, 20_000.0, 10_000.0, 20_000.0],
+            "truth_phi": [0.1, 0.2, 0.1, 0.2],
+            "reco_pt": [np.nan, np.nan, 1_000.0, 2_000.0],
+            "reco_eta": [np.nan, np.nan, 3.0, 3.1],
+            "reco_p": [np.nan, np.nan, 10_000.0, 20_000.0],
+            "reco_phi": [np.nan, np.nan, 0.1, 0.2],
+        }
+    )
+
+    signal = _performance_tables(frame.copy(), "long", ["from_signal"])
+    inclusive = _performance_tables(frame.copy(), "long", [])
+    signal_p = signal[signal["variable"] == "p"]
+    inclusive_p = inclusive[inclusive["variable"] == "p"]
+
+    assert int(signal_p["efficiency_denominator"].sum()) == 1
+    assert int(signal_p["efficiency_numerator"].sum()) == 1
+    assert int(inclusive_p["efficiency_denominator"].sum()) == 2
+    assert int(inclusive_p["efficiency_numerator"].sum()) == 2
+
+
+def test_track_chi2ndof_scan_cuts_reco_numerators_only():
+    frame = pd.DataFrame(
+        {
+            "row_type": ["reconstructible"] * 2 + ["long"] * 4,
+            "truth_matched": [False, False, True, True, False, False],
+            "is_unique_truth_match": [False, False, True, True, False, False],
+            "from_signal": [True, False, True, False, False, False],
+            "has_velo": [True] * 6,
+            "has_ut": [False] * 6,
+            "has_mp": [False] * 6,
+            "has_ft": [False] * 6,
+            "has_t": [True] * 6,
+            "truth_pt": [1_000.0, 2_000.0, 1_000.0, 2_000.0, np.nan, np.nan],
+            "truth_eta": [3.0, 3.1, 3.0, 3.1, np.nan, np.nan],
+            "truth_p": [
+                10_000.0,
+                20_000.0,
+                10_000.0,
+                20_000.0,
+                np.nan,
+                np.nan,
+            ],
+            "truth_phi": [0.1, 0.2, 0.1, 0.2, np.nan, np.nan],
+            "reco_pt": [np.nan, np.nan, 1_000.0, 2_000.0, 3_000.0, 4_000.0],
+            "reco_eta": [np.nan, np.nan, 3.0, 3.1, 3.2, 3.3],
+            "reco_p": [np.nan, np.nan, 10_000.0, 20_000.0, 30_000.0, 40_000.0],
+            "reco_phi": [np.nan, np.nan, 0.1, 0.2, 0.3, 0.4],
+            "reco_chi2ndof": [np.nan, np.nan, 9.0, 5.0, 7.0, 3.0],
+        }
+    )
+
+    no_cut = _performance_tables(frame.copy(), "long", [])
+    cut_8 = _performance_tables(frame.copy(), "long", [], 8.0)
+    cut_4 = _performance_tables(frame.copy(), "long", [], 4.0)
+    no_cut_p = no_cut[no_cut["variable"] == "p"]
+    cut_8_p = cut_8[cut_8["variable"] == "p"]
+    cut_4_p = cut_4[cut_4["variable"] == "p"]
+
+    assert int(no_cut_p["efficiency_denominator"].sum()) == 2
+    assert int(cut_8_p["efficiency_denominator"].sum()) == 2
+    assert int(cut_4_p["efficiency_denominator"].sum()) == 2
+    assert int(no_cut_p["efficiency_numerator"].sum()) == 2
+    assert int(cut_8_p["efficiency_numerator"].sum()) == 1
+    assert int(cut_4_p["efficiency_numerator"].sum()) == 0
+    assert int(no_cut_p["fake_numerator"].sum()) == 2
+    assert int(no_cut_p["fake_denominator"].sum()) == 4
+    assert int(cut_8_p["fake_numerator"].sum()) == 2
+    assert int(cut_8_p["fake_denominator"].sum()) == 3
+    assert int(cut_4_p["fake_numerator"].sum()) == 1
+    assert int(cut_4_p["fake_denominator"].sum()) == 1
+
+
+def test_pid_roc_uses_truth_and_rich_selected_species(tmp_path):
+    frame = pd.DataFrame(
+        {
+            "mc_truth": [True] * 8,
+            "rich_has_info": [True] * 8,
+            "mc_pid": [321] * 4 + [211] * 4,
+            "rich_dll_kaon": [5.0, 4.0, 1.0, -1.0, 3.0, 0.0, -2.0, -4.0],
+            "p": np.full(8, 10_000.0),
+            "pt": np.full(8, 1_000.0),
+            "eta": np.full(8, 3.0),
+        }
+    )
+
+    performance = PIDPerformance(frame, out_dir=tmp_path)
+    roc = performance.global_roc(cuts=np.array([2.0]))
+
+    np.testing.assert_allclose(roc["efficiency"], [0.5])
+    np.testing.assert_allclose(roc["misid"], [0.25])
+
+
+def test_tracking_summary_counts_unique_matches_and_ghosts():
+    frame = pd.DataFrame(
+        {
+            "row_type": [
+                "reconstructible",
+                "reconstructible",
+                "long",
+                "long",
+                "long",
+            ],
+            "truth_matched": [False, False, True, True, False],
+            "is_unique_truth_match": [False, False, True, False, False],
+            "from_signal": [True, True, True, True, False],
+            "has_velo": [True] * 5,
+            "has_ut": [False] * 5,
+            "has_mp": [False] * 5,
+            "has_ft": [False] * 5,
+            "has_t": [True] * 5,
+        }
+    )
+    _set_track_type_tags(frame)
+
+    summary = _integrated_summary(frame, "sample", "long", ["from_signal"])
+
+    assert summary["efficiency_numerator"] == 1
+    assert summary["efficiency_denominator"] == 2
+    assert summary["efficiency"] == 0.5
+    assert summary["ghost_numerator"] == 1
+    assert summary["ghost_denominator"] == 3
+
+
+def test_ghost_rate_uses_reconstructed_phi_for_both_counts():
+    frame = pd.DataFrame(
+        {
+            "row_type": ["reconstructible", "long", "long", "long"],
+            "truth_matched": [False, True, True, False],
+            "is_unique_truth_match": [False, True, True, False],
+            "from_signal": [True, True, True, False],
+            "has_velo": [True] * 4,
+            "has_ut": [False] * 4,
+            "has_mp": [False] * 4,
+            "has_ft": [False] * 4,
+            "has_t": [True] * 4,
+            "truth_pt": [1_000.0, 1_000.0, 2_000.0, np.nan],
+            "truth_eta": [3.0, 3.0, 3.1, np.nan],
+            "truth_p": [10_000.0, 10_000.0, 20_000.0, np.nan],
+            "truth_phi": [0.1, 0.1, 0.2, np.nan],
+            "reco_pt": [np.nan, 1_000.0, 2_000.0, 3_000.0],
+            "reco_eta": [np.nan, 3.0, 3.1, 3.2],
+            "reco_p": [np.nan, 10_000.0, 20_000.0, 30_000.0],
+            "reco_phi": [np.nan, 0.1, 0.2, 0.3],
+        }
+    )
+
+    table = _performance_tables(frame, "long", ["from_signal"])
+    phi = table[table["variable"] == "phi"]
+
+    assert len(phi) == 99
+    np.testing.assert_allclose(
+        np.append(phi["bin_low"].to_numpy(), phi["bin_high"].iloc[-1]),
+        np.linspace(-np.pi, np.pi, 100),
+    )
+    assert int(phi["fake_numerator"].sum()) == 1
+    assert int(phi["fake_denominator"].sum()) == 3
+
+
+def test_momentum_resolution_uses_gaussian_mean_and_width():
+    residual = np.tile(np.array([-0.02, -0.01, 0.0, 0.01, 0.02]), 10)
+    n_fit, mean, sigma, mean_error, sigma_error = _fit_gaussian_core(
+        residual, min_entries=20
+    )
+
+    assert n_fit == 50
+    np.testing.assert_allclose(mean, 0.0, atol=1e-15)
+    np.testing.assert_allclose(sigma, np.sqrt(2e-4))
+    assert mean_error > 0.0
+    assert sigma_error > 0.0
+
+    frame = pd.DataFrame(
+        {
+            "row_type": ["long"] * len(residual),
+            "truth_matched": [True] * len(residual),
+            "truth_p": np.full(len(residual), 10_000.0),
+            "reco_p": 10_000.0 * (1.0 + residual),
+            "truth_eta": np.full(len(residual), 3.0),
+            "truth_phi": np.full(len(residual), 0.2),
+        }
+    )
+    table = _momentum_resolution_table(frame, min_entries=20)
+    fitted_p = table[(table["variable"] == "p") & (table["n_fit"] > 0)].iloc[0]
+
+    np.testing.assert_allclose(fitted_p["bias_percent"], 0.0, atol=1e-13)
+    np.testing.assert_allclose(
+        fitted_p["resolution_percent"], 100.0 * np.sqrt(2e-4)
+    )
+    np.testing.assert_allclose(
+        fitted_p["fit_low_percent"],
+        -3.0 * fitted_p["resolution_percent"],
+    )
+    np.testing.assert_allclose(
+        fitted_p["fit_high_percent"],
+        3.0 * fitted_p["resolution_percent"],
+    )
+    assert fitted_p["fit_status"] == "fitted"
+    assert fitted_p["core_fraction"] == 1.0
+
+
+def test_momentum_resolution_does_not_fit_an_underpopulated_robust_core():
+    residual = np.concatenate([np.linspace(-0.01, 0.01, 19), [1_000.0]])
+    n_fit, mean, sigma, mean_error, sigma_error = _fit_gaussian_core(
+        residual, min_entries=20
+    )
+
+    assert n_fit == 19
+    assert all(
+        np.isnan(value) for value in (mean, sigma, mean_error, sigma_error)
+    )
+    details = _gaussian_core_fit(residual, min_entries=20)
+    assert details["fit_status"] == "insufficient_entries"
+    assert details["core_fraction"] == 19 / 20
+    assert np.isfinite(details["seed_fit_low"])
+    assert np.isfinite(details["seed_fit_high"])

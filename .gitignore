@@ -12,3 +12,11 @@ analysis_table.csv
 summary.json
 top_candidates.json
 selected_candidates.json
+.*
+input
+!tests/input
+public/
+!.github
+!.pre-commit-config.yaml
+input_bk/
+public_bk/

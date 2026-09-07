@@ -1,234 +1,252 @@
-"""Core data models used by the particle-combination framework.
-
-This module defines:
-- immutable physics objects (`TrackState`, `PrimaryVertex`, `LorentzVector`)
-- event containers (`EventInput`)
-- particle-mass assignment objects (`ParticleHypothesis`)
-- combination outputs (`CombinationResult`)
-- configurable filtering controls (`TrackPreselection`, `CombinationCuts`)
-- helper iterator for n-body combinatorics.
-"""
+"""SoA data model: Container type alias and shared utilities."""
 
 from __future__ import annotations
-__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
+from typing import Any, Callable
+
+import awkward as ak
+import numpy as np
+
+Container = dict[str, Any]
+CutFunction = Callable[[Container], Any]
 
 
-import math
-from dataclasses import dataclass
-from itertools import combinations
-from typing import Iterable, Sequence
+# Lower-triangular covariance index pairs for 4x4 (used by IO)
+COV4_LOWER_TRI = [(i, j) for i in range(4) for j in range(i + 1)]
 
-Matrix2x2 = tuple[tuple[float, float], tuple[float, float]]
-Matrix3x3 = tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
-Matrix4x4 = tuple[
-    tuple[float, float, float, float],
-    tuple[float, float, float, float],
-    tuple[float, float, float, float],
-    tuple[float, float, float, float],
-]
+# Lower-triangular for 5x5 (ROOT branch naming uses 5x5)
+COV5_LOWER_TRI = [(i, j) for i in range(5) for j in range(i + 1)]
 
 
-@dataclass(frozen=True)
-class TrackState:
-    """Single reconstructed track with kinematics, timing, covariance, and PID extras.
-
-    The state is parameterized at a reference z plane as:
-    `(x, y, tx=dx/dz, ty=dy/dz, time)`.
-    `cov4` stores the covariance for `(x, y, tx, ty)`.
-    """
-
-    track_id: str
-    z: float
-    x: float
-    y: float
-    tx: float  # dx/dz
-    ty: float  # dy/dz
-    time: float
-    cov4: Matrix4x4
-    sigma_time: float
-    p: float   # momentum magnitude
-    charge: int = 0
-    has_rich1: bool = False
-    has_rich2: bool = False
-    rich_dll_pi: float = 0.0
-    rich_dll_k: float = 0.0
-    rich_dll_p: float = 0.0
-    rich_dll_e: float = 0.0
-    has_calo: bool = False
-    calo_dll_e: float = 0.0
-    source_track_ids: tuple[str, ...] = ()
-
-    def extrapolate(self, z_target: float) -> tuple[float, float]:
-        """Linearly extrapolate x/y to a target z coordinate."""
-        dz = z_target - self.z
-        return self.x + self.tx * dz, self.y + self.ty * dz
-
-    def extrapolate_xy_cov(self, z_target: float) -> tuple[tuple[float, float], Matrix2x2]:
-        """Extrapolate x/y and propagate 2x2 covariance at target z."""
-        dz = z_target - self.z
-        x, y = self.extrapolate(z_target)
-        c = self.cov4
-        var_x = c[0][0] + 2.0 * dz * c[0][2] + (dz * dz) * c[2][2]
-        var_y = c[1][1] + 2.0 * dz * c[1][3] + (dz * dz) * c[3][3]
-        cov_xy = c[0][1] + dz * c[0][3] + dz * c[1][2] + (dz * dz) * c[2][3]
-        return (x, y), ((var_x, cov_xy), (cov_xy, var_y))
-
-    def direction(self) -> tuple[float, float, float]:
-        """Return normalized 3D direction from slopes `(tx, ty, 1)`."""
-        norm = (1.0 + self.tx * self.tx + self.ty * self.ty) ** 0.5
-        return self.tx / norm, self.ty / norm, 1.0 / norm
-
-    @property
-    def pt(self) -> float:
-        """Transverse momentum derived from momentum magnitude and direction."""
-        d = self.direction()
-        return self.p * (d[0] * d[0] + d[1] * d[1]) ** 0.5
-
-    @property
-    def eta(self) -> float:
-        """Pseudorapidity computed from direction."""
-        d = self.direction()
-        pz = d[2]
-        p = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]) ** 0.5
-        if p == abs(pz):
-            return 1e9 if pz >= 0 else -1e9
-        return 0.5 * math.log((p + pz) / (p - pz))
+def n_daughters(candidates: Container) -> int:
+    """Count daughter{k}_global_index fields to get n_body."""
+    n = 0
+    while f"daughter{n}_global_index" in candidates:
+        n += 1
+    return n
 
 
-@dataclass(frozen=True)
-class PrimaryVertex:
-    """Primary-vertex hypothesis for one event."""
+def get_daughter(candidates: Container, k: int, field: str):
+    """Look up a daughter field via global_index into the pool."""
+    cache_key = f"_cached_daughter{k}_{field}"
+    if cache_key in candidates:
+        return candidates[cache_key]
 
-    pv_id: str
-    x: float
-    y: float
-    z: float
-    cov3: Matrix3x3
-    time: float
-    sigma_time: float
-
-
-@dataclass(frozen=True)
-class EventInput:
-    """One event payload with its own track list and primary-vertex list."""
-
-    event_id: str
-    tracks: tuple[TrackState, ...]
-    primary_vertices: tuple[PrimaryVertex, ...]
-
-
-@dataclass(frozen=True)
-class ParticleHypothesis:
-    """Named particle hypothesis used to derive mass-dependent observables."""
-
-    name: str
-    mass: float
-    pdg_id: int | None = None
-
-
-@dataclass(frozen=True)
-class LorentzVector:
-    """Simple 4-vector with convenience properties and addition."""
-
-    px: float
-    py: float
-    pz: float
-    e: float
-
-    def __add__(self, other: "LorentzVector") -> "LorentzVector":
-        """Component-wise 4-vector addition."""
-        return LorentzVector(
-            self.px + other.px,
-            self.py + other.py,
-            self.pz + other.pz,
-            self.e + other.e,
+    pool = candidates["_daughter_pools"][k]
+    global_idx = candidates[f"daughter{k}_global_index"]
+    # Flatten the event axis of the pool → one entry per track, then index
+    flat_pool = ak.flatten(pool[field])
+    if isinstance(global_idx, np.ndarray):
+        result = flat_pool[global_idx]
+        # Flat container + 1D field → numpy for downstream compatibility
+        if flat_pool.ndim == 1:
+            result = np.asarray(result)
+    elif global_idx.ndim > 1:
+        # Jagged (unflattened) candidates: index flat, restore event axis
+        result = ak.unflatten(
+            flat_pool[ak.flatten(global_idx)], ak.num(global_idx)
         )
+    else:
+        result = flat_pool[global_idx]
 
-    @property
-    def p2(self) -> float:
-        """Squared 3-momentum magnitude."""
-        return self.px * self.px + self.py * self.py + self.pz * self.pz
-
-    @property
-    def mass2(self) -> float:
-        """Invariant mass squared."""
-        return self.e * self.e - self.p2
-
-    @property
-    def mass(self) -> float:
-        """Invariant mass with signed handling for small negative mass2 values."""
-        m2 = self.mass2
-        return m2**0.5 if m2 >= 0.0 else -((-m2) ** 0.5)
+    candidates[cache_key] = result
+    return result
 
 
-@dataclass(frozen=True)
-class CombinationResult:
-    """One accepted n-body candidate with fitted vertex and observables."""
+def gather_daughters_stack(candidates: Container, field: str):
+    """Gather a field from all daughters and column-stack into (N, n_body)."""
+    cache_key = f"_cached_daughters_stack_{field}"
+    if cache_key in candidates:
+        return candidates[cache_key]
 
-    track_ids: tuple[str, ...]
-    masses: tuple[float, ...]
-    particle_hypotheses: tuple[str, ...]
-    vertex_xyz: tuple[float, float, float]
-    vertex_cov_xyz: Matrix3x3
-    vertex_time: float
-    vertex_sigma_time: float
-    vertices_xy: tuple[tuple[float, float], ...]
-    candidate_p4: LorentzVector
-    vertex_chi2: float
-    vertex_time_chi2: float
-    pair_time_chi2: float
-    doca_pairs: dict[str, float]
-    track_min_ip: dict[str, float]
-    track_min_ip_chi2: dict[str, float]
-    track_charges: dict[str, int]
-    track_pid_info: dict[str, dict[str, float | bool]]
-    charge_pattern: str
-    total_charge: int
-    pair_pt: float
-    pair_eta: float
-    source_track_ids: tuple[str, ...]
-    event_id: str | None = None
-    best_pv_id: str | None = None
-    preselected_pv_ids: tuple[str, ...] = ()
-    composite_min_ip: float | None = None
-    composite_min_ip_chi2: float | None = None
-    composite_pv_time_chi2: float | None = None
-    composite_pv_time_residual: float | None = None
-    composite_pv_flight_time: float | None = None
+    n_body = n_daughters(candidates)
+    result = np.column_stack(
+        [get_daughter(candidates, k, field) for k in range(n_body)]
+    )
+    candidates[cache_key] = result
+    return result
 
 
-@dataclass(frozen=True)
-class TrackPreselection:
-    """Track-level preselection applied before n-body combinatorics."""
-
-    min_pt: float | None = None
-    min_eta: float | None = None
-    max_eta: float | None = None
-    min_ip_to_any_pv: float | None = None
-
-
-@dataclass(frozen=True)
-class CombinationCuts:
-    """Candidate-level cuts applied after building each n-body combination."""
-
-    max_doca: float | None = None
-    max_vertex_chi2: float | None = None
-    max_vertex_time_chi2: float | None = None
-    max_pair_time_chi2: float | None = None
-    min_mass: float | None = None
-    max_mass: float | None = None
-    min_pair_pt: float | None = None
-    max_pair_pt: float | None = None
-    min_pair_eta: float | None = None
-    max_pair_eta: float | None = None
-    max_composite_pv_time_chi2: float | None = None
-    allowed_charge_patterns: tuple[str, ...] | None = None
+def unflatten_container(container: Container, counts) -> Container:
+    """Unflatten every public array to jagged structure; '_' keys are carried forward unchanged."""
+    out = {}
+    for key, val in container.items():
+        if key.startswith("_"):
+            out[key] = val
+        else:
+            out[key] = ak.unflatten(val, counts, axis=0)
+    return out
 
 
-def iter_n_body_combinations(
-    tracks: Sequence[TrackState], n_body: int
-) -> Iterable[tuple[TrackState, ...]]:
-    """Yield track tuples for supported n-body values (2, 3, 4)."""
-    if n_body not in (2, 3, 4):
-        raise ValueError("Only 2-body, 3-body, and 4-body combinations are supported.")
-    return combinations(tracks, n_body)
+def apply_mask(container: Container, mask) -> Container:
+    """Apply a boolean mask to every array; non-array metadata is carried forward."""
+    out = {}
+    for key, val in container.items():
+        try:
+            out[key] = val[mask]
+        except (TypeError, IndexError):
+            out[key] = val  # non-array metadata: carry forward
+    return out
+
+
+def apply_cuts(container: Container, cuts: list[CutFunction]) -> Container:
+    """AND-combine cut functions and return the filtered container."""
+    if not cuts:
+        return container
+
+    # Start with all-True mask matching the shape of any field
+    ref = next(iter(container.values()))
+    mask = ak.ones_like(ref, dtype=bool)
+    for cut_fn in cuts:
+        mask = mask & cut_fn(container)
+    return apply_mask(container, mask)
+
+
+def _resolve(field, c):
+    """Resolve a field: call if callable, otherwise container lookup."""
+    return field(c) if callable(field) else c[field]
+
+
+def cut_min(field, threshold: float) -> CutFunction:
+    """Cut: field >= threshold. field can be a string or callable."""
+    return lambda c: _resolve(field, c) >= threshold
+
+
+def cut_max(field, threshold: float) -> CutFunction:
+    """Cut: field <= threshold. field can be a string or callable."""
+    return lambda c: _resolve(field, c) <= threshold
+
+
+def cut_range(field, lo: float, hi: float) -> CutFunction:
+    """Cut: lo <= field <= hi. field can be a string or callable."""
+    return lambda c: (_resolve(field, c) >= lo) & (_resolve(field, c) <= hi)
+
+
+class _DaughterView:
+    """Proxy that redirects c[field] to get_daughter, so generic cuts work."""
+
+    __slots__ = ("_c", "_k")
+
+    def __init__(self, c, k):
+        self._c = c
+        self._k = k
+
+    def __getitem__(self, key):
+        return get_daughter(self._c, self._k, key)
+
+    def __contains__(self, key):
+        return key in self._c["_daughter_pools"][self._k]
+
+
+def any_in_tree(cut: CutFunction) -> CutFunction:
+    """Wrap a cut to apply per-daughter: passes if ANY daughter satisfies it."""
+
+    def _cut(c):
+        mask = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            result = cut(_DaughterView(c, k))
+            mask = result if mask is None else (mask | result)
+            k += 1
+        return mask
+
+    return _cut
+
+
+def all_in_tree(cut: CutFunction) -> CutFunction:
+    """Wrap a cut to apply per-daughter: passes only if ALL daughters satisfy it."""
+
+    def _cut(c):
+        mask = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            result = cut(_DaughterView(c, k))
+            mask = result if mask is None else (mask & result)
+            k += 1
+        return mask
+
+    return _cut
+
+
+def sum_in_tree(field: str) -> Callable[[Container], Any]:
+    """Sum a field across all daughters."""
+
+    def _fn(c):
+        total = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            val = get_daughter(c, k, field)
+            total = val if total is None else (total + val)
+            k += 1
+        return total
+
+    return _fn
+
+
+def min_in_tree(field: str) -> Callable[[Container], Any]:
+    """Minimum of a field across all daughters."""
+
+    def _fn(c):
+        best = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            val = get_daughter(c, k, field)
+            best = val if best is None else np.minimum(best, val)
+            k += 1
+        return best
+
+    return _fn
+
+
+def max_in_tree(field: str) -> Callable[[Container], Any]:
+    """Maximum of a field across all daughters."""
+
+    def _fn(c):
+        best = None
+        k = 0
+        while f"daughter{k}_global_index" in c:
+            val = get_daughter(c, k, field)
+            best = val if best is None else np.maximum(best, val)
+            k += 1
+        return best
+
+    return _fn
+
+
+def pick_inner(arr, idx):
+    """Pick one element from the innermost axis of a jagged array per row."""
+    # Inner-axis counts and cumulative offsets
+    inner_counts = ak.num(arr, axis=-1)
+    counts_np = np.asarray(ak.flatten(inner_counts, axis=None))
+    offsets = np.zeros(len(counts_np), dtype=np.int64)
+    if len(counts_np) > 1:
+        np.cumsum(counts_np[:-1], out=offsets[1:])
+
+    flat_arr = np.asarray(ak.flatten(arr, axis=None))
+    flat_idx = offsets + np.asarray(ak.flatten(idx, axis=None))
+    # Clamp to valid range (empty inner rows produce out-of-bounds idx)
+    if len(flat_arr) > 0:
+        np.clip(flat_idx, 0, len(flat_arr) - 1, out=flat_idx)
+        result = flat_arr[flat_idx]
+    else:
+        result = np.zeros_like(flat_idx)
+
+    # Restore the outer structure of idx (could be flat, 1-deep jagged, etc.)
+    if isinstance(idx, np.ndarray):
+        return result
+    return ak.unflatten(result, ak.num(idx, axis=-1))
+
+
+def gather_jagged(source, indices):
+    """Pick from source[evt, :] using indices[evt, :], returning result[evt, :]."""
+    src_flat = np.asarray(ak.flatten(source))
+    idx_flat = np.asarray(ak.flatten(indices))
+    src_counts = ak.to_numpy(ak.num(source))
+    idx_counts = ak.to_numpy(ak.num(indices))
+
+    offsets = np.zeros(len(src_counts) + 1, dtype=np.int64)
+    np.cumsum(src_counts, out=offsets[1:])
+    evt_per = np.repeat(np.arange(len(idx_counts)), idx_counts)
+
+    picked = src_flat[offsets[evt_per] + idx_flat]
+    return ak.unflatten(picked, idx_counts)

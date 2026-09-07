@@ -1,67 +1,51 @@
-"""Particle-hypothesis helpers used in mass-assignment workflows.
-
-This module exposes named hypothesis builders that can be used directly in the
-combiner API instead of raw numeric masses.
-"""
+"""PDG lookup and mass hypothesis assignment."""
 
 from __future__ import annotations
-__author__ = "Renato Quagliani <rquaglia@cern.ch>"
+
+import awkward as ak
+from particle import Particle
+from .configurable import configurable
 
 
-from .models import ParticleHypothesis
-
-_PION = ParticleHypothesis(name="pi", mass=0.13957039, pdg_id=211)
-_KAON = ParticleHypothesis(name="K", mass=0.493677, pdg_id=321)
-_PROTON = ParticleHypothesis(name="p", mass=0.93827208816, pdg_id=2212)
-_MUON = ParticleHypothesis(name="mu", mass=0.1056583755, pdg_id=13)
-_ELECTRON = ParticleHypothesis(name="e", mass=0.00051099895, pdg_id=11)
-
-_NAME_TO_HYPOTHESIS: dict[str, ParticleHypothesis] = {
-    "pi": _PION,
-    "pion": _PION,
-    "k": _KAON,
-    "kaon": _KAON,
-    "p": _PROTON,
-    "proton": _PROTON,
-    "mu": _MUON,
-    "muon": _MUON,
-    "e": _ELECTRON,
-    "electron": _ELECTRON,
-}
-
-
-def make_pion() -> ParticleHypothesis:
-    """Return the standard charged-pion mass hypothesis."""
-    return _PION
-
-
-def make_kaon() -> ParticleHypothesis:
-    """Return the standard charged-kaon mass hypothesis."""
-    return _KAON
-
-
-def make_proton() -> ParticleHypothesis:
-    """Return the proton mass hypothesis."""
-    return _PROTON
-
-
-def make_muon() -> ParticleHypothesis:
-    """Return the muon mass hypothesis."""
-    return _MUON
-
-
-def make_electron() -> ParticleHypothesis:
-    """Return the electron mass hypothesis."""
-    return _ELECTRON
-
-
-def particle_hypothesis_from_name(name: str) -> ParticleHypothesis:
-    """Resolve a short particle name (e.g. `pi`, `kaon`) into a hypothesis."""
-    key = name.strip().lower()
-    try:
-        return _NAME_TO_HYPOTHESIS[key]
-    except KeyError as exc:
-        supported = ", ".join(sorted(_NAME_TO_HYPOTHESIS))
+def _lookup_particle(particle_id):
+    """Resolve particle name or int to a Particle object."""
+    if isinstance(particle_id, int):
+        return Particle.from_pdgid(particle_id)
+    matches = Particle.findall(particle_id)
+    if len(matches) != 1:
         raise ValueError(
-            f"Unknown particle hypothesis name '{name}'. Supported names: {supported}"
-        ) from exc
+            f"Particle name {particle_id!r} matched {len(matches)} particles "
+            f"(expected exactly 1). Matches: {matches}"
+        )
+    return matches[0]
+
+
+def pdg_id(particle_id) -> int:
+    """Look up signed PDG ID from a particle name or pass through int."""
+    if isinstance(particle_id, int):
+        return particle_id
+    return int(_lookup_particle(particle_id).pdgid)
+
+
+def pdg_mass(particle_id) -> float:
+    """Look up particle mass in MeV from a name or PDG ID."""
+    return _lookup_particle(particle_id).mass
+
+
+@configurable
+def set_tracks_pid(tracks, particle_id, fit_track_time=True):
+    """Add mass, pid fields and fit t0 for a given particle hypothesis."""
+    from .physics import fit_track_t0
+
+    p = _lookup_particle(particle_id)
+    shape_like = ak.ones_like(tracks["x"])
+    tracks["mass"] = shape_like * p.mass
+    tracks["pid"] = shape_like * int(p.pdgid)
+
+    if fit_track_time and ("tvhits_z" in tracks) and ("tvhits_t" in tracks):
+        fit_track_t0(tracks)
+
+
+def set_composite_pid(candidates, particle_id):
+    """Set the mother particle PDG ID on candidates."""
+    candidates["pid"] = pdg_id(particle_id)

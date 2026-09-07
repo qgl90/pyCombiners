@@ -1,0 +1,26 @@
+# Bs -> J/psi phi pipeline.
+output_dir: public/bs_to_jpsiphi
+input: input/eventtuple_bsjpsiphi_1p0e34_1000evts.root
+max_events_cheated: 1000
+max_events_full: 1000
+
+# Track/composite timing and PV association.
+use_pv_timing: true
+max_dt_chi2: 16.0
+require_common_pv_on_time: true
+
+# PV-dependent HLT2-like cuts.
+min_track_ip_chi2: 9.0
+min_jpsi_fd_chi2: 30.0
+max_bs_ip_chi2: 25.0
+min_bs_dira: 0.9995
+
+# Spatial vertex chi2/ndof (all stages are two-body, hence one spatial ndof).
+max_jpsi_vertex_chi2: 30.0
+max_phi_vertex_chi2: 25.0
+max_bs_vertex_chi2: 9.0
+
+# Vertex-time compatibility is required at every fitted decay vertex.
+max_jpsi_vertex_time_chi2: 16.0
+max_phi_vertex_time_chi2: 16.0
+max_bs_vertex_time_chi2: 16.0

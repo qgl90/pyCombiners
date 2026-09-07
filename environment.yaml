@@ -1,0 +1,29 @@
+name: pyCombiner
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12
+  # Config
+  - pyyaml
+  # Data I/O
+  - uproot
+  - awkward
+  - pyarrow
+  # Numerics
+  - numpy
+  - scipy
+  - pandas
+  # Plotting
+  - matplotlib
+  - mplhep
+  - mscorefonts
+  - root
+  # Particle data
+  - particle
+  # Workflow
+  - snakemake-minimal
+  # Test
+  - pytest
+  # MVA
+  - onnxruntime=*=*cpu*

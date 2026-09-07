@@ -1,0 +1,4 @@
+# PicoCal calo study pipeline.
+output_dir: public/calo_study
+input: /shared/jzhuo/run5/renato_test_middle-scenario-June2026-RichV3/1p0E34_Bs_phigamma_100k/*.root
+max_events: 0

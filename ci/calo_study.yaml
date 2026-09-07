@@ -1,0 +1,3 @@
+# CI override: 1k local sample on the runner VM.
+input: /data/ci/input/eventtuple_bsphigamma_1p0e34_1000evts.root
+max_events: 1000

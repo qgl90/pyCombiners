@@ -15,8 +15,12 @@ dependencies = [
   "pyarrow>=12.0",
 ]
 
-[project.scripts]
-track-combiner = "trackcomb.cli:main"
+[project.optional-dependencies]
+root = ["uproot>=5.0", "awkward>=2.0", "particle>=0.23"]
+performance = ["matplotlib>=3.7", "mplhep>=0.3"]
+
+[tool.pytest.ini_options]
+
 
 [tool.setuptools]
 package-dir = {"" = "src"}
