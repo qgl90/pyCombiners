@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from trackcomb import (
+    DEFAULT_MAX_DT_CHI2,
     counters,
     load_event_info,
     load_pvs,
@@ -55,6 +56,7 @@ def reconstruction(chunk):
     ip_sel = pairs["ip"][sel_mask]
     chi2_sel = pairs["ip_chi2"][sel_mask]
     dt_sel = pairs["dt"][sel_mask]
+    dt_chi2_sel = pairs["dt_chi2"][sel_mask]
 
     local_pv = ak.local_index(ip_sel, axis=2)
     true_pv_sel = true_pv_idx[sel_mask]
@@ -64,6 +66,7 @@ def reconstruction(chunk):
     assoc_ip = np.asarray(ak.flatten(ip_sel, axis=None))
     assoc_chi2 = np.asarray(ak.flatten(chi2_sel, axis=None))
     assoc_dt = np.asarray(ak.flatten(dt_sel, axis=None))
+    assoc_dt_chi2 = np.asarray(ak.flatten(dt_chi2_sel, axis=None))
     assoc_is_true = np.asarray(ak.flatten(is_true, axis=None))
 
     if len(assoc_ip) == 0:
@@ -97,6 +100,8 @@ def reconstruction(chunk):
             "ip": assoc_ip,
             "ip_chi2": assoc_chi2,
             "dt_corrected": assoc_dt,
+            "dt_chi2": assoc_dt_chi2,
+            "passes_dt_chi2_3p5": assoc_dt_chi2 <= DEFAULT_MAX_DT_CHI2,
         }
     )
 

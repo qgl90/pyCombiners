@@ -4,6 +4,14 @@ import awkward as ak
 import numpy as np
 import pytest
 
+from physics.analysis.pv_association_study.track_pv_timing_scan import (
+    _label_suffix,
+    _no_cut_position,
+)
+from physics.reconstruction.signal_track_pv_study import (
+    NO_TIMING_METRIC,
+    _build_scans,
+)
 from trackcomb import (
     min_ip,
     min_ip_chi2,
@@ -16,6 +24,20 @@ from trackcomb import (
     tracks_pv_association,
 )
 from trackcomb.physics import compute_track_pv_pairs
+
+
+def test_signal_track_scan_has_bounded_no_timing_endpoint():
+    scans = _build_scans([0.05], [4.0])
+
+    assert scans[:-1] == [("dt", 0.05), ("dt_chi2", 4.0)]
+    assert scans[-1][0] == NO_TIMING_METRIC
+    assert np.isinf(scans[-1][1])
+    assert np.isclose(_no_cut_position([1.0, 4.0, 9.0, 100.0]), 300.0)
+
+
+def test_timing_scan_label_suffix_avoids_trailing_underscore():
+    assert _label_suffix("") == ""
+    assert _label_suffix("1p0_timed") == "_1p0_timed"
 
 
 def _inputs():
