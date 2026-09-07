@@ -75,11 +75,14 @@ def count_reco_signal(candidates, mother_pdg):
 
 
 def compute_bkgcat(candidates):
-    """Compute LHCb-style background categories into candidates["bkgcat"].
+    """Compute a supported subset of IBackgroundCategory into ``bkgcat``.
 
-    Codes: 0=Signal, 10=QuasiSignal, 20=PhysBkg, 30=Reflection,
-    60=Ghost, 63=Clone, 66=Hierarchy, 100=Pileup,
-    110=FromB, 120=FromC, 130=LightParticle (40/50 omitted).
+    Emitted codes use the official meanings: 0=Signal, 10=QuasiSignal,
+    20=FullyRecoPhysBkg, 30=Reflection, 60=Ghost, 63=Clone,
+    66=Hierarchy, 100=FromDifferentPV, 110=bbar, 120=ccbar, 130=uds.
+    The available flattened ancestry does not currently distinguish the
+    official 40, 50, 70, or 80 categories, so this is not a complete port of
+    DaVinci's IBackgroundCategory implementation.
     """
     n_body = n_daughters(candidates)
     if n_body == 0:
@@ -199,7 +202,7 @@ def compute_bkgcat(candidates):
     assign(has_common & correct_pids & correct_mother & ~all_fromsignal, 10)
 
     # 5. No common ancestor
-    # 5a. Pileup (100): daughters from different PVs
+    # 5a. FromDifferentPV (100): daughters from different PVs
     different_pv = np.zeros(N_total, dtype=bool)
     for i in range(n_body):
         for j in range(i + 1, n_body):
@@ -207,7 +210,7 @@ def compute_bkgcat(candidates):
             different_pv |= both_valid & (d_mc_pv_key[i] != d_mc_pv_key[j])
     assign(~has_common & different_pv, 100)
 
-    # 5b. FromB (110): any daughter has b-hadron ancestor
+    # 5b. bbar (110): any daughter has b-hadron ancestor
     is_from_b = np.zeros(N_total, dtype=bool)
     for k in range(n_body):
         abs_p = np.abs(d_anc_pids[k])
@@ -219,7 +222,7 @@ def compute_bkgcat(candidates):
         is_from_b |= ak.to_numpy(ak.any(has_b, axis=-1))
     assign(~has_common & is_from_b, 110)
 
-    # 5c. FromC (120): any daughter has c-hadron ancestor
+    # 5c. ccbar (120): any daughter has c-hadron ancestor
     is_from_c = np.zeros(N_total, dtype=bool)
     for k in range(n_body):
         abs_p = np.abs(d_anc_pids[k])
@@ -231,7 +234,7 @@ def compute_bkgcat(candidates):
         is_from_c |= ak.to_numpy(ak.any(has_c, axis=-1))
     assign(~has_common & is_from_c, 120)
 
-    # Remaining: 130 (LightParticle) - already default
+    # Remaining: 130 (uds) - already default
     candidates["bkgcat"] = ak.unflatten(cats, cand_counts)
 
 
