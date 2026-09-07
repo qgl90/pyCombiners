@@ -204,7 +204,10 @@ def main():
         print(header)
         print(sep)
         for name in obs_dict:
-            vals = obs_dict[name]
+            vals = np.asarray(obs_dict[name])
+            vals = vals[np.isfinite(vals)]
+            if len(vals) == 0:
+                continue
             p1, p5, p50, p95, p99 = np.percentile(vals, [1, 5, 50, 95, 99])
             print(
                 f"{name:<20}  {p1:>8.4f}  {p5:>8.4f}  {p50:>8.4f}  "
@@ -225,8 +228,13 @@ def main():
     axes = list(axes.flatten())
 
     for ax, (name, xlabel) in zip(axes, available):
-        sig_v = sig_obs.get(name, np.array([]))
-        bkg_v = bkg_obs.get(name, np.array([]))
+        sig_v = np.asarray(sig_obs.get(name, np.array([])))
+        bkg_v = np.asarray(bkg_obs.get(name, np.array([])))
+        sig_v = sig_v[np.isfinite(sig_v)]
+        bkg_v = bkg_v[np.isfinite(bkg_v)]
+        if len(sig_v) == 0 and len(bkg_v) == 0:
+            ax.set_visible(False)
+            continue
         xrange = (
             _auto_range(sig_v)
             if len(sig_v) > 0

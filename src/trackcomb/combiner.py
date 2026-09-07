@@ -144,6 +144,29 @@ def make_combinations(track_pools):
     return out
 
 
+def add_daughter_pv_compatibility(comb):
+    """Add daughter best-PV agreement and common eligible-PV information."""
+    n_body = n_daughters(comb)
+    common = get_daughter(comb, 0, "pv_on_time")
+    same_best = get_daughter(comb, 0, "best_pv_index") >= 0
+
+    for k in range(1, n_body):
+        other = get_daughter(comb, k, "pv_on_time")
+        common = common[
+            ak.any(
+                common[:, :, np.newaxis] == other[:, np.newaxis, :], axis=-1
+            )
+        ]
+        same_best &= get_daughter(comb, k, "best_pv_index") == get_daughter(
+            comb, 0, "best_pv_index"
+        )
+
+    comb["daughter_common_pv_on_time"] = common
+    comb["daughters_have_common_pv_on_time"] = ak.num(common, axis=-1) > 0
+    comb["daughters_have_same_best_pv"] = same_best
+    return comb
+
+
 def combine(
     track_pools,
     pvs,
@@ -155,8 +178,18 @@ def combine(
     doca_function=compute_doca,
     consolidate_function=consolidate_composite,
     pv_function=composite_pv_association,
+    compute_pv_compatibility=False,
+    require_common_pv_on_time=False,
+    require_same_best_pv=False,
 ):
-    """Run the n-body combination pipeline and return a jagged composite container."""
+    """Run the n-body combination pipeline and return a jagged composite.
+
+    Daughter PV compatibility is optional metadata and/or a pre-fit candidate
+    requirement. Set ``compute_pv_compatibility`` to retain the metadata without
+    rejecting candidates.
+    After fitting, ``pv_function`` independently associates the new composite
+    using its improved time and time uncertainty.
+    """
 
     n_events = len(pvs["x"])
 
@@ -180,6 +213,33 @@ def combine(
     comb = make_combinations(track_pools)
     if len(comb["event_idx"]) == 0:
         return None
+
+    if (
+        compute_pv_compatibility
+        or require_common_pv_on_time
+        or require_same_best_pv
+    ):
+        missing = [
+            i
+            for i, pool in enumerate(track_pools)
+            if "pv_on_time" not in pool or "best_pv_index" not in pool
+        ]
+        if missing:
+            raise ValueError(
+                "PV-compatible combinations require tracks/composites to be "
+                f"associated to PVs first (missing pools {missing})"
+            )
+        add_daughter_pv_compatibility(comb)
+        compatibility = ak.ones_like(comb["event_idx"], dtype=bool)
+        if require_common_pv_on_time:
+            compatibility = (
+                compatibility & comb["daughters_have_common_pv_on_time"]
+            )
+        if require_same_best_pv:
+            compatibility = compatibility & comb["daughters_have_same_best_pv"]
+        comb = apply_mask(comb, compatibility)
+        if len(comb["event_idx"]) == 0:
+            return None
 
     doca_function(comb)
     compute_prefit_kinematics(comb)

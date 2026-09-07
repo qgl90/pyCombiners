@@ -41,15 +41,27 @@ from .components import (
     load_reconstructible_calo_clusters,
 )
 from .physics import (
+    DEFAULT_MAX_DT_CHI2,
     compute_track_pv_pairs,
+    track_pv_time_mask,
+    reduce_track_pv_pairs,
+    set_track_pv_ip_statistics,
+    pvs_on_time_for_tracks,
+    tracks_on_time_for_pvs,
     tracks_pv_association,
+    min_ip,
+    min_ip_chi2,
+    cut_min_ip,
+    cut_max_ip,
+    cut_min_ip_chi2,
+    cut_max_ip_chi2,
     compute_default_track_quantities,
     fit_track_t0,
     vertex_fit_3d,
     vertex_fit_3d_plus_time,
     composite_pv_association,
 )
-from .combiner import combine
+from .combiner import add_daughter_pv_compatibility, combine
 from .truth import compute_bkgcat, count_reco_signal, count_true_decays
 
 from .pid import (
@@ -96,14 +108,27 @@ __all__ = [
     "load_reconstructible_calo_clusters",
     "candidates_to_dataframe",
     # Physics (user-facing only)
+    "DEFAULT_MAX_DT_CHI2",
     "compute_track_pv_pairs",
+    "track_pv_time_mask",
+    "reduce_track_pv_pairs",
+    "set_track_pv_ip_statistics",
+    "pvs_on_time_for_tracks",
+    "tracks_on_time_for_pvs",
     "tracks_pv_association",
+    "min_ip",
+    "min_ip_chi2",
+    "cut_min_ip",
+    "cut_max_ip",
+    "cut_min_ip_chi2",
+    "cut_max_ip_chi2",
     "compute_default_track_quantities",
     "fit_track_t0",
     "vertex_fit_3d",
     "vertex_fit_3d_plus_time",
     "composite_pv_association",
     # Pipeline
+    "add_daughter_pv_compatibility",
     "combine",
     # Truth matching
     "compute_bkgcat",

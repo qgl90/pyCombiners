@@ -4,23 +4,28 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 import awkward as ak
 import numpy as np
 
 from trackcomb import (
+    DEFAULT_MAX_DT_CHI2,
     configurable,
     apply_cuts,
     apply_mask,
     candidates_to_dataframe,
     combine,
+    composite_pv_association,
     count_reco_signal,
     count_true_decays,
     counters,
     rate_counters,
     cut_max,
+    cut_max_ip,
     cut_min,
+    cut_min_ip,
     cut_range,
     load_event_info,
     load_pvs,
@@ -31,6 +36,10 @@ from trackcomb import (
     tracks_pv_association,
     compute_bkgcat,
     pdg_id,
+)
+
+TIMED_COMPOSITE_PV = partial(
+    composite_pv_association, max_dt_chi2=DEFAULT_MAX_DT_CHI2
 )
 
 
@@ -74,11 +83,18 @@ def cheated_reconstruction(chunk, candidate_cuts=None):
     tracks = apply_mask(tracks, has_ks)
 
     set_tracks_pid(tracks, "pi+")
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
     pos_tracks = apply_mask(tracks, tracks["charge"] > 0)
     neg_tracks = apply_mask(tracks, tracks["charge"] < 0)
 
-    candidates = combine([pos_tracks, neg_tracks], pvs)
+    candidates = combine(
+        [pos_tracks, neg_tracks],
+        pvs,
+        pv_function=TIMED_COMPOSITE_PV,
+        require_common_pv_on_time=True,
+    )
     if candidates is None:
         rate_counters("cheated efficiency").add(0, n_true)
         return None
@@ -108,7 +124,9 @@ def cheated_reconstruction(chunk, candidate_cuts=None):
 def reconstruction(chunk, mode="full"):
     tracks, pvs, event_info = _load(chunk)
 
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
     set_tracks_pid(tracks, "pi+")
     pos_tracks = apply_mask(tracks, tracks["charge"] > 0)
     neg_tracks = apply_mask(tracks, tracks["charge"] < 0)
@@ -117,7 +135,7 @@ def reconstruction(chunk, mode="full"):
         cuts = {
             "track_cuts": [
                 cut_min("pt", 50),
-                cut_min("min_ip", 0.1),
+                cut_min_ip(0.1, dt_chi2=DEFAULT_MAX_DT_CHI2),
                 rich_electron_veto,
             ],
             "combination_cuts": [
@@ -130,13 +148,16 @@ def reconstruction(chunk, mode="full"):
             ],
             "final_cuts": [
                 cut_min("dira", 0.999),
-                cut_max("composite_ip", 0.5),
+                cut_max_ip(0.5, dt_chi2=DEFAULT_MAX_DT_CHI2),
                 cut_min("fdchi2", 100),
             ],
         }
     elif mode == "dist":
         cuts = {
-            "track_cuts": [cut_min("pt", 60), cut_min("min_ip", 0.08)],
+            "track_cuts": [
+                cut_min("pt", 60),
+                cut_min_ip(0.08, dt_chi2=DEFAULT_MAX_DT_CHI2),
+            ],
             "combination_cuts": [
                 cut_max("max_doca", 0.3),
                 cut_range("mass", 470, 520),
@@ -149,7 +170,13 @@ def reconstruction(chunk, mode="full"):
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    candidates = combine([pos_tracks, neg_tracks], pvs, **cuts)
+    candidates = combine(
+        [pos_tracks, neg_tracks],
+        pvs,
+        pv_function=TIMED_COMPOSITE_PV,
+        require_common_pv_on_time=True,
+        **cuts,
+    )
     if candidates is None:
         return None
     set_composite_pid(candidates, "K(S)0")

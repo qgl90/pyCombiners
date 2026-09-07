@@ -197,7 +197,11 @@ def main():
     axes = list(axes.flatten())
 
     for ax, (name, xlabel) in zip(axes, available):
-        vals = obs[name]
+        vals = np.asarray(obs[name])
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            ax.set_visible(False)
+            continue
         xrange = _auto_range(vals)
         bins = np.linspace(xrange[0], xrange[1], 51)
         ax.hist(
@@ -248,7 +252,10 @@ def main():
     pct_levels = [1, 5, 10, 25, 50, 75, 90, 95, 99]
     rows = []
     for name, _ in available:
-        vals = obs[name]
+        vals = np.asarray(obs[name])
+        vals = vals[np.isfinite(vals)]
+        if len(vals) == 0:
+            continue
         pcts = np.percentile(vals, pct_levels)
         row = {
             "variable": name,

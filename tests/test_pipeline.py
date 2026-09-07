@@ -65,14 +65,17 @@ class TestCombineSoASanity:
         for i in range(len(ks_candidates["composite_ip"])):
             vals = np.asarray(ks_candidates["composite_ip"][i])
             if len(vals) > 0:
-                assert np.all(vals >= 0), f"Event {i}: negative composite_ip"
+                assert np.all(vals[np.isfinite(vals)] >= 0), (
+                    f"Event {i}: negative composite_ip"
+                )
 
     def test_dira_reasonable(self, ks_candidates):
         for i in range(len(ks_candidates["dira"])):
             dira = np.asarray(ks_candidates["dira"][i])
             if len(dira) > 0:
-                assert np.all(dira >= -1.0 - 1e-10), f"Event {i}: dira < -1"
-                assert np.all(dira <= 1.0 + 1e-10), f"Event {i}: dira > 1"
+                finite = dira[np.isfinite(dira)]
+                assert np.all(finite >= -1.0 - 1e-10), f"Event {i}: dira < -1"
+                assert np.all(finite <= 1.0 + 1e-10), f"Event {i}: dira > 1"
 
     def test_vertex_time_present(self, ks_candidates):
         assert "vertex_time" in ks_candidates

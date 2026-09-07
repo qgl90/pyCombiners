@@ -7,6 +7,7 @@ import awkward as ak
 from ..io import read, read_float64, unflatten_2d
 from ..models import Container, COV5_LOWER_TRI
 from ..physics import compute_default_track_quantities
+from ..pid import set_tracks_pid
 from ..configurable import configurable
 
 HIT_TYPES = ("TVHits", "UPHits", "FTHits", "MPHits")
@@ -112,4 +113,7 @@ def load_tracks(
     t["_type"] = "tracks"
     t["track_id"] = ak.local_index(t["x"], axis=1)
     compute_track_quantities(t)
+    # The default track time and track-PV timing residual use the pion mass
+    # hypothesis. Reconstruction channels may replace it afterwards.
+    set_tracks_pid(t, "pi+")
     return t

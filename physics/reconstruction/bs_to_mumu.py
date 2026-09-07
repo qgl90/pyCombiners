@@ -12,6 +12,7 @@ import awkward as ak
 import numpy as np
 
 from trackcomb import (
+    DEFAULT_MAX_DT_CHI2,
     configurable,
     apply_mask,
     apply_cuts,
@@ -19,6 +20,7 @@ from trackcomb import (
     any_in_tree,
     candidates_to_dataframe,
     combine,
+    composite_pv_association,
     compute_bkgcat,
     count_reco_signal,
     count_true_decays,
@@ -26,7 +28,11 @@ from trackcomb import (
     rate_counters,
     onnx_models,
     cut_max,
+    cut_max_ip,
+    cut_max_ip_chi2,
     cut_min,
+    cut_min_ip,
+    cut_min_ip_chi2,
     cut_range,
     get_daughter,
     load_event_info,
@@ -72,11 +78,20 @@ def cheated_reconstruction(chunk):
     tracks = apply_mask(tracks, is_muon & has_bs)
 
     set_tracks_pid(tracks, "mu+")
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
     pos_tracks = apply_mask(tracks, tracks["charge"] > 0)
     neg_tracks = apply_mask(tracks, tracks["charge"] < 0)
 
-    candidates = combine([pos_tracks, neg_tracks], pvs)
+    candidates = combine(
+        [pos_tracks, neg_tracks],
+        pvs,
+        pv_function=partial(
+            composite_pv_association, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+        ),
+        require_common_pv_on_time=True,
+    )
     if candidates is None:
         rate_counters("cheated efficiency").add(0, n_true)
         return None
@@ -98,8 +113,10 @@ def cheated_reconstruction(chunk):
 
 def _reconstruct(tracks, pvs, event_info, mode):
     set_tracks_pid(tracks, "mu+")
-    if mode == "dist":
-        tracks = tracks_pv_association(tracks, pvs)
+    use_timing = mode != "full_notime"
+    max_dt_chi2 = DEFAULT_MAX_DT_CHI2 if use_timing else None
+    tracks = tracks_pv_association(tracks, pvs, max_dt_chi2=max_dt_chi2)
+    composite_pv = partial(composite_pv_association, max_dt_chi2=max_dt_chi2)
     pos_tracks = apply_mask(tracks, tracks["charge"] > 0)
     neg_tracks = apply_mask(tracks, tracks["charge"] < 0)
 
@@ -121,8 +138,8 @@ def _reconstruct(tracks, pvs, event_info, mode):
             ],
             "final_cuts": [
                 cut_min("dira", 0.9995),
-                cut_max("composite_ip", 0.1),
-                cut_max("composite_ip_chi2", 16),
+                cut_max_ip(0.1, dt_chi2=DEFAULT_MAX_DT_CHI2),
+                cut_max_ip_chi2(16, dt_chi2=DEFAULT_MAX_DT_CHI2),
             ],
         }
     elif mode == "full_notime":
@@ -142,8 +159,8 @@ def _reconstruct(tracks, pvs, event_info, mode):
             ],
             "final_cuts": [
                 cut_min("dira", 0.9995),
-                cut_max("composite_ip", 0.1),
-                cut_max("composite_ip_chi2", 16),
+                cut_max_ip(0.1),
+                cut_max_ip_chi2(16),
             ],
         }
     elif mode == "dist":
@@ -161,14 +178,20 @@ def _reconstruct(tracks, pvs, event_info, mode):
             ],
             "final_cuts": [
                 cut_min("dira", 0.9995),
-                cut_max("composite_ip", 0.1),
-                cut_max("composite_ip_chi2", 16),
+                cut_max_ip(0.1, dt_chi2=DEFAULT_MAX_DT_CHI2),
+                cut_max_ip_chi2(16, dt_chi2=DEFAULT_MAX_DT_CHI2),
             ],
         }
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    candidates = combine([pos_tracks, neg_tracks], pvs, **cuts)
+    candidates = combine(
+        [pos_tracks, neg_tracks],
+        pvs,
+        pv_function=composite_pv,
+        require_common_pv_on_time=True,
+        **cuts,
+    )
     if candidates is None:
         return None
     set_composite_pid(candidates, "B(s)0")
@@ -208,14 +231,16 @@ def with_pvtag(mode, model_path, mva_cut):
 def pvtag_filter(tracks, pvs, n_events, model_path, mva_cut):
     """Filter tracks/PVs by TwoTrackMVA PV tagging. Returns pair or None."""
     # PV association for all tracks
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
 
     # MVA track preselection
     mva_tracks = apply_cuts(
         tracks,
         [
             cut_min("pt", 200),
-            cut_min("min_ip", 0.06),
+            cut_min_ip(0.06, dt_chi2=DEFAULT_MAX_DT_CHI2),
             cut_max("chi2ndof", 10),
         ],
     )
@@ -237,10 +262,14 @@ def pvtag_filter(tracks, pvs, n_events, model_path, mva_cut):
         final_cuts=[
             cut_range("flight_eta", 2, 5),
             cut_min("mcor", 1000),
-            all_in_tree(cut_min("min_ip_chi2", 4)),
+            all_in_tree(cut_min_ip_chi2(4, dt_chi2=DEFAULT_MAX_DT_CHI2)),
             all_in_tree(cut_min("pt", 200)),
-            cut_max("composite_ip_chi2", 16),
+            cut_max_ip_chi2(16, dt_chi2=DEFAULT_MAX_DT_CHI2),
         ],
+        pv_function=partial(
+            composite_pv_association, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+        ),
+        require_common_pv_on_time=True,
     )
 
     if mva_cands is None or int(ak.sum(ak.num(mva_cands["vertex_x"]))) == 0:
@@ -338,8 +367,6 @@ def main():
         reco_fn = cheated_reconstruction
     else:
         reconstruction.global_bind(mode=args.mode)
-        if args.mode == "full_notime":
-            set_tracks_pid.global_bind(fit_track_time=False)
         reco_fn = reconstruction
 
     if args.pvtag:

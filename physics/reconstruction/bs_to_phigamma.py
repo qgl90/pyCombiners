@@ -9,6 +9,7 @@ to the cluster, time from the aligned weighted mean (picocal_time.py).
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 import awkward as ak
@@ -16,8 +17,10 @@ import numpy as np
 import pandas as pd
 
 from trackcomb import (
+    DEFAULT_MAX_DT_CHI2,
     apply_mask,
     combine,
+    composite_pv_association,
     counters,
     load_calo_clusters,
     load_event_info,
@@ -36,6 +39,9 @@ import picocal_time
 
 BS_PDG = abs(pdg_id("B(s)0"))
 GAMMA_PDG = 22
+TIMED_COMPOSITE_PV = partial(
+    composite_pv_association, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+)
 
 
 def _load(chunk):
@@ -229,7 +235,14 @@ def _to_dataframe(bs, event_info):
 def _reconstruct_phi(tracks, pvs, track_cuts=None, phi_cuts=None):
     pos = apply_mask(tracks, tracks["charge"] > 0)
     neg = apply_mask(tracks, tracks["charge"] < 0)
-    phi = combine([pos, neg], pvs, track_cuts=track_cuts, **(phi_cuts or {}))
+    phi = combine(
+        [pos, neg],
+        pvs,
+        track_cuts=track_cuts,
+        pv_function=TIMED_COMPOSITE_PV,
+        require_common_pv_on_time=True,
+        **(phi_cuts or {}),
+    )
     if phi is not None:
         set_composite_pid(phi, "phi(1020)")
     return phi
@@ -285,7 +298,9 @@ def cheated_reconstruction(chunk):
     has_bs = ak.any(np.abs(tracks["mc_ancestor_pids"]) == BS_PDG, axis=-1)
     tracks = apply_mask(tracks, is_kaon & has_bs)
     set_tracks_pid(tracks, "K+")
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
 
     phi = _reconstruct_phi(tracks, pvs)
     if phi is None:

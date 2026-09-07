@@ -4,20 +4,26 @@
 from __future__ import annotations
 
 import argparse
+from functools import partial
 from pathlib import Path
 
 import awkward as ak
 import numpy as np
 
 from trackcomb import (
+    DEFAULT_MAX_DT_CHI2,
     all_in_tree,
     apply_cuts,
     candidates_to_dataframe,
     combine,
+    composite_pv_association,
     configurable,
     counters,
     cut_max,
+    cut_max_ip_chi2,
     cut_min,
+    cut_min_ip,
+    cut_min_ip_chi2,
     cut_range,
     get_daughter,
     load_event_info,
@@ -30,6 +36,10 @@ from trackcomb import (
     tracks_pv_association,
 )
 
+TIMED_COMPOSITE_PV = partial(
+    composite_pv_association, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+)
+
 
 @configurable
 def reconstruction(chunk, model_path="models/two_track_mva.onnx", mva_cut=0.0):
@@ -40,13 +50,15 @@ def reconstruction(chunk, model_path="models/two_track_mva.onnx", mva_cut=0.0):
 
     set_tracks_pid(tracks, "pi+")
 
-    tracks = tracks_pv_association(tracks, pvs)
+    tracks = tracks_pv_association(
+        tracks, pvs, max_dt_chi2=DEFAULT_MAX_DT_CHI2
+    )
 
     tracks = apply_cuts(
         tracks,
         [
             cut_min("pt", 200),
-            cut_min("min_ip", 0.06),
+            cut_min_ip(0.06, dt_chi2=DEFAULT_MAX_DT_CHI2),
             cut_max("chi2ndof", 10),
         ],
     )
@@ -58,10 +70,6 @@ def reconstruction(chunk, model_path="models/two_track_mva.onnx", mva_cut=0.0):
             cut_max("max_doca", 1.0),
             cut_min(sum_in_tree("pt"), 400),
             cut_min("pt", 1000),
-            lambda c: (
-                get_daughter(c, 0, "best_pv_index")
-                == get_daughter(c, 1, "best_pv_index")
-            ),
         ],
         # combine() may return None when a cut stage empties the chunk
         composite_cuts=[
@@ -72,10 +80,12 @@ def reconstruction(chunk, model_path="models/two_track_mva.onnx", mva_cut=0.0):
         final_cuts=[
             cut_range("flight_eta", 2, 5),
             cut_min("mcor", 1000),
-            all_in_tree(cut_min("min_ip_chi2", 4)),
+            all_in_tree(cut_min_ip_chi2(4, dt_chi2=DEFAULT_MAX_DT_CHI2)),
             all_in_tree(cut_min("pt", 200)),
-            cut_max("composite_ip_chi2", 16),
+            cut_max_ip_chi2(16, dt_chi2=DEFAULT_MAX_DT_CHI2),
         ],
+        pv_function=TIMED_COMPOSITE_PV,
+        require_same_best_pv=True,
     )
 
     if candidates is None:

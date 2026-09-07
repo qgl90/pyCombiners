@@ -13,6 +13,10 @@ and keeps only the upper-left 4x4 block of the covariance over `(x, y, tx, ty)`.
 (q/p) is dropped because the current physics computations (IP, vertex fit, DOCA) only use spatial
 information.
 
+Loaded tracks receive a pion mass hypothesis by default. This makes the mass-dependent track-time
+fit available before track-PV association; a reconstruction channel may replace the hypothesis
+later with `set_tracks_pid`.
+
 Extrapolation to a new z is a straight line:
 
 ```
@@ -63,9 +67,40 @@ where `c = 299.792458 mm/ns`.
 
 ## Best PV selection
 
-For tracks, the best PV is the one with the smallest IP, optionally pre-filtered by
-`|dt_corrected| < threshold`. If no PV passes the time cut, the filter is dropped and all PVs
-are considered.
+For tracks and composites, IP, IP chi2, `dt`, and `dt_chi2` are first computed relative to every
+PV. A requested `dt` or `dt_chi2` limit then creates an eligible-PV mask, and the best PV is the
+eligible one with the smallest transverse IP. The reconstruction working point is
+`dt_chi2 <= 3.5`. If neither timing limit is supplied, all PVs are eligible and association is
+based only on spatial IP/IP chi2. If a requested timing mask is empty, `min_ip` and
+`min_ip_chi2` are NaN and `best_pv_index` is `-1`; it does not fall back to all PVs.
+
+The stored `pv_ip`, `pv_ip_chi2`, `pv_dt`, and `pv_dt_chi2` arrays allow the timing window to be
+chosen at selection time:
+
+```python
+cut_min_ip(0.06, dt_chi2=3.5)
+cut_min_ip_chi2(4.0, dt_chi2=3.5)
+# no timing restriction:
+cut_min_ip(0.06)
+```
+
+`compute_track_pv_pairs` also provides `dt_chi2` for every track-PV pair:
+
+```
+dt_chi2 = dt_corrected^2 / (sigma_track_time^2 + sigma_pv_time^2)
+```
+
+`pvs_on_time_for_tracks` returns the event-local PV indices passing a `dt` and/or `dt_chi2` cut
+for each track. `tracks_on_time_for_pvs` provides the reverse mapping, including an optional track
+mask when only a subset such as signal tracks is wanted.
+
+`reduce_track_pv_pairs` applies the timing mask to the all-PV pair table and returns aligned
+event/track/selected-PV lists containing the original PV index, IP, IP chi2, dt, and dt chi2.
+
+`set_track_pv_ip_statistics` writes the compatible-PV multiplicity, smallest IP, second-smallest
+IP, and their PV indices into the track container. Its optional `pv_mask` selects the PV indices to
+consider separately for each track; without it, all PVs are considered. A supplied empty mask does
+not fall back: it gives `n_pvs = 0`, NaN IP values, and indices of `-1`.
 
 For composites, the same logic applies but the IP is computed by extrapolating the composite
 flight direction (as a straight line using `tx = dx/dz`, `ty = dy/dz`) back to each PV z.
@@ -118,6 +153,12 @@ For parallel tracks (`det ~ 0`), a simplified formula is used.
 For n-body combinations, DOCA is computed for all unique pairs, stored as `doca12`, `doca13`, etc.
 The maximum over all pairs is stored as `max_doca`.
 
+The corresponding `doca12_chi2`, etc. use the transverse separation at the two closest-approach
+points. Each track's 5x5 covariance, ordered as `(x, y, tx, ty, q/p)`, is propagated from its own
+reference z to its closest-approach z with the straight-line transport Jacobian. The two propagated
+position covariance blocks are summed and used for a 2D Mahalanobis chi2. Summary fields are
+`min_doca_chi2` and `max_doca_chi2`.
+
 ## Vertex time fit
 
 Track times are first propagated to the vertex z, correcting for mass-dependent speed:
@@ -151,7 +192,13 @@ The mean over all pairs is returned.
 
 ## Composite-PV association
 
-After the vertex and timing fits, each composite candidate is associated to its best PV.
+Before fitting, `combine` can optionally require daughters to share the same timing-qualified
+best PV (`require_same_best_pv=True`) or at least one entry in their `pv_on_time` lists
+(`require_common_pv_on_time=True`). These requirements only select daughter combinations.
+
+After the vertex and timing fits, the new composite is independently associated to its best PV.
+Its own time and reduced time uncertainty are used to rebuild the `dt_chi2` mask; the daughter
+intersection is not reused as the composite mask.
 The following quantities are computed for each (candidate, PV) pair:
 
 ### Composite IP and IP chi2

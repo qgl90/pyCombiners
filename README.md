@@ -75,28 +75,30 @@ be to associate best PV to each track:
 tracks = load_tracks_from_event(...)
 pvs = load_pvs(...)
 
-selected_pvs = select_pvs(pvs)
-tracks_pv_association(tracks, selected_pvs)
+tracks_pv_association(tracks, pvs, max_dt_chi2=3.5)
 ```
 
 In this example, `tracks_pv_association` will create new keys in the tracks dict, so variables
-like `min_ip` and `min_ip_chi2` and `best_pv_x/y/z` become available.
+like `min_ip`, `min_ip_chi2`, `pv_on_time`, and `best_pv_x/y/z` become
+available. The timing requirement first defines the eligible PV subset; IP and
+best PV are then evaluated on that subset. Passing neither `max_dt` nor
+`max_dt_chi2` keeps all PVs and therefore gives the spatial-only association.
 
 Then the selection of tracks becomes something very simple:
 
 ```python
-good_tracks = apply_mask(tracks, tracks["min_ip"] > threshold)
+good_tracks = apply_cuts(tracks, [cut_min_ip(threshold, dt_chi2=3.5)])
 ```
 
 This Dict design also allows us to define different cuts easily without relying on any Functor
 framework. Just use the built-in cut helpers:
 
 ```python
-from trackcomb import cut_min, cut_max, cut_range
+from trackcomb import cut_min, cut_max, cut_max_ip_chi2, cut_range
 
 my_cuts = [
     cut_min("pt", 500),  # pt >= 500 MeV
-    cut_max("min_ip_chi2", 16),  # IP chi2 <= 16
+    cut_max_ip_chi2(16, dt_chi2=3.5),  # timed-PV IP chi2 <= 16
     cut_range("mass", 470, 520),  # mass in [470, 520] MeV
 ]
 ```
@@ -123,6 +125,8 @@ DIRA, fdchi2, mcor, etc).
 A typical reconstruction script looks like this:
 
 ```python
+from functools import partial
+
 from trackcomb import (
     event_stream,
     load_tracks,
@@ -132,6 +136,7 @@ from trackcomb import (
     apply_mask,
     tracks_pv_association,
     combine,
+    composite_pv_association,
     cut_min,
     cut_max,
     cut_range,
@@ -146,7 +151,7 @@ for chunk in event_stream("input/1p0E34_Bs_mumu/*.root", chunk_size=100):
     info = load_event_info(chunk)
 
     # Track-PV association, mass hypothesis
-    tracks_pv_association(tracks, pvs)
+    tracks_pv_association(tracks, pvs, max_dt_chi2=3.5)
     set_tracks_pid(tracks, "mu+")
     pos = apply_mask(tracks, tracks["charge"] > 0)
     neg = apply_mask(tracks, tracks["charge"] < 0)
@@ -162,6 +167,8 @@ for chunk in event_stream("input/1p0E34_Bs_mumu/*.root", chunk_size=100):
         ],
         composite_cuts=[cut_max("vertex_chi2", 4)],
         final_cuts=[cut_min("dira", 0.9995)],
+        pv_function=partial(composite_pv_association, max_dt_chi2=3.5),
+        require_common_pv_on_time=True,
     )
     if candidates is None:
         continue

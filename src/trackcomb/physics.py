@@ -17,6 +17,7 @@ from .models import (
     gather_jagged,
     get_daughter,
     n_daughters,
+    pick_inner,
 )
 from .linalg import (
     inv_3x3_sym,
@@ -25,6 +26,8 @@ from .linalg import (
     solve_2x2,
     solve_3x3_sym,
 )
+
+DEFAULT_MAX_DT_CHI2 = 3.5
 
 
 def _flatten_field(container, field):
@@ -156,48 +159,213 @@ def compute_track_pv_pairs(tracks, pvs):
         dt_flat = t_time - flight_time - p_time
         result["dt"] = _unflatten_3d(dt_flat, track_counts, pv_counts)
 
+        if "sigma_time" in tracks and "sigma_time" in pvs:
+            t_sigma = _flatten_field(tracks, "sigma_time")[t_idx]
+            p_sigma = _flatten_field(pvs, "sigma_time")[p_idx]
+            dt_var = t_sigma**2 + p_sigma**2
+            dt_chi2_flat = np.where(
+                dt_var > 0.0,
+                dt_flat**2 / np.where(dt_var > 0.0, dt_var, 1.0),
+                np.inf,
+            )
+            result["dt_chi2"] = _unflatten_3d(
+                dt_chi2_flat, track_counts, pv_counts
+            )
+
     return result
 
 
-def tracks_pv_association(tracks, pvs, max_dt_corrected=0.05):
-    """Select best PV per track (min IP) and add best_pv_* fields."""
-    pairs = compute_track_pv_pairs(tracks, pvs)
-    ip_all = pairs["ip"]
-    ip_chi2_all = pairs["ip_chi2"]
+def _timing_mask(pairs, dt=None, dt_chi2=None):
+    """Return the eligible-PV mask, optionally restricted by one time metric."""
+    if dt is not None and dt_chi2 is not None:
+        raise ValueError("choose at most one of dt and dt_chi2")
+    if dt is None and dt_chi2 is None:
+        return ak.ones_like(pairs["ip"], dtype=bool)
+    if dt is not None:
+        if "dt" not in pairs:
+            raise ValueError("track-PV pairs do not contain timing residuals")
+        return np.abs(pairs["dt"]) <= dt
+    if "dt_chi2" not in pairs:
+        raise ValueError("track-PV pairs do not contain timing chi2")
+    return pairs["dt_chi2"] <= dt_chi2
 
-    if max_dt_corrected is not None and "dt" in pairs:
-        dt_all = pairs["dt"]
-        time_ok = np.abs(dt_all) < max_dt_corrected
-        any_pass = ak.any(time_ok, axis=-1)
-        ip_for_min = ak.where(
-            any_pass,
-            ak.where(time_ok, ip_all, np.inf),  # Set ip = inf for bad pvs
-            ip_all,
+
+def track_pv_time_mask(pairs, max_dt=None, max_dt_chi2=None):
+    """Return the event/track/PV mask for an optional timing selection."""
+    return _timing_mask(pairs, dt=max_dt, dt_chi2=max_dt_chi2)
+
+
+def reduce_track_pv_pairs(pairs, allowed):
+    """Reduce aligned all-PV observables to the selected PVs per track."""
+    reduced = {"pv_index": ak.local_index(pairs["ip"], axis=-1)[allowed]}
+    for field in ("ip", "ip_chi2", "dt", "dt_chi2"):
+        if field in pairs:
+            reduced[field] = pairs[field][allowed]
+    return reduced
+
+
+def set_track_pv_ip_statistics(
+    tracks, pairs, prefix="time_selected", pv_mask=None
+):
+    """Store the first two IP-ranked PVs within an optional PV mask."""
+    if pv_mask is None:
+        pv_mask = ak.ones_like(pairs["ip"], dtype=bool)
+    reduced = reduce_track_pv_pairs(pairs, pv_mask)
+    n_pvs = ak.num(reduced["ip"], axis=-1)
+    order = ak.argsort(reduced["ip"], axis=-1)
+    padded = ak.pad_none(order, 2, axis=-1, clip=True)
+    best_local = ak.fill_none(padded[..., 0], 0)
+    second_local = ak.fill_none(padded[..., 1], 0)
+    best_ip = pick_inner(reduced["ip"], best_local)
+    second_ip = pick_inner(reduced["ip"], second_local)
+    best_pv = pick_inner(reduced["pv_index"], best_local)
+    second_pv = pick_inner(reduced["pv_index"], second_local)
+
+    tracks[f"{prefix}_n_pvs"] = n_pvs
+    tracks[f"{prefix}_min_ip"] = ak.where(n_pvs >= 1, best_ip, np.nan)
+    tracks[f"{prefix}_second_min_ip"] = ak.where(n_pvs >= 2, second_ip, np.nan)
+    tracks[f"{prefix}_best_pv_index"] = ak.where(n_pvs >= 1, best_pv, -1)
+    tracks[f"{prefix}_second_pv_index"] = ak.where(n_pvs >= 2, second_pv, -1)
+    return tracks
+
+
+def pvs_on_time_for_tracks(
+    tracks, pvs, max_dt=None, max_dt_chi2=None, pairs=None
+):
+    """Return event-local PV indices selected for every track."""
+    if pairs is None:
+        pairs = compute_track_pv_pairs(tracks, pvs)
+    mask = track_pv_time_mask(pairs, max_dt, max_dt_chi2)
+    return ak.local_index(mask, axis=-1)[mask]
+
+
+def tracks_on_time_for_pvs(
+    tracks,
+    pvs,
+    max_dt=None,
+    max_dt_chi2=None,
+    pairs=None,
+    track_mask=None,
+):
+    """Return event-local track indices selected for every PV."""
+    if pairs is None:
+        pairs = compute_track_pv_pairs(tracks, pvs)
+    mask = track_pv_time_mask(pairs, max_dt, max_dt_chi2)
+    if track_mask is not None:
+        mask = mask & track_mask[:, :, np.newaxis]
+
+    result = []
+    for event, (n_tracks, n_pvs) in enumerate(
+        zip(pairs["track_counts"], pairs["pv_counts"])
+    ):
+        event_mask = np.asarray(mask[event], dtype=bool).reshape(
+            n_tracks, n_pvs
         )
-    else:
-        ip_for_min = ip_all
+        result.append(
+            [
+                np.flatnonzero(event_mask[:, pv_index]).tolist()
+                for pv_index in range(n_pvs)
+            ]
+        )
+    return ak.Array(result)
+
+
+def _stored_pv_pairs(container):
+    required = ("pv_ip", "pv_ip_chi2")
+    missing = [field for field in required if field not in container]
+    if missing:
+        raise ValueError(
+            "container has no complete all-PV relations; run PV association "
+            f"first (missing {missing})"
+        )
+    pairs = {
+        "ip": container["pv_ip"],
+        "ip_chi2": container["pv_ip_chi2"],
+    }
+    for field in ("dt", "dt_chi2"):
+        stored = f"pv_{field}"
+        if stored in container:
+            pairs[field] = container[stored]
+    return pairs
+
+
+def _min_after_timing(container, field, dt=None, dt_chi2=None):
+    pairs = _stored_pv_pairs(container)
+    mask = _timing_mask(pairs, dt, dt_chi2)
+    has_selected = ak.any(mask, axis=-1)
+    value = ak.min(
+        ak.where(mask, pairs[field], np.inf), axis=-1, mask_identity=False
+    )
+    return ak.where(has_selected, value, np.nan)
+
+
+def min_ip(container, dt=None, dt_chi2=None):
+    """Minimum transverse IP over all PVs or a timing-selected subset."""
+    return _min_after_timing(container, "ip", dt, dt_chi2)
+
+
+def min_ip_chi2(container, dt=None, dt_chi2=None):
+    """Minimum transverse IP chi2 over all PVs or a timing-selected subset."""
+    return _min_after_timing(container, "ip_chi2", dt, dt_chi2)
+
+
+def cut_min_ip(value, dt=None, dt_chi2=None):
+    return lambda container: min_ip(container, dt, dt_chi2) >= value
+
+
+def cut_max_ip(value, dt=None, dt_chi2=None):
+    return lambda container: min_ip(container, dt, dt_chi2) <= value
+
+
+def cut_min_ip_chi2(value, dt=None, dt_chi2=None):
+    return lambda container: min_ip_chi2(container, dt, dt_chi2) >= value
+
+
+def cut_max_ip_chi2(value, dt=None, dt_chi2=None):
+    return lambda container: min_ip_chi2(container, dt, dt_chi2) <= value
+
+
+def _store_pv_pairs(container, pairs):
+    for source in ("ip", "ip_chi2", "dt", "dt_chi2"):
+        if source in pairs:
+            container[f"pv_{source}"] = pairs[source]
+
+
+def tracks_pv_association(tracks, pvs, max_dt=None, max_dt_chi2=None):
+    """Associate each track to its minimum-IP eligible PV.
+
+    With neither timing limit set, all PVs are eligible and the association is
+    spatial only. Otherwise one of ``max_dt`` or ``max_dt_chi2`` restricts the
+    eligible PVs before the IP minimum is found.
+    """
+    pairs = compute_track_pv_pairs(tracks, pvs)
+    _store_pv_pairs(tracks, pairs)
+    ip_all = pairs["ip"]
+    time_ok = _timing_mask(pairs, max_dt, max_dt_chi2)
+    ip_for_min = ak.where(time_ok, ip_all, np.inf)
 
     best_pv = ak.argmin(ip_for_min, axis=-1, keepdims=True)
 
     # Handle empty tracks or empty PVs — argmin returns None
     has_pvs = ak.num(ip_all, axis=-1) > 0
+    has_selected_pv = has_pvs & ak.any(time_ok, axis=-1)
     zero = has_pvs * 0.0
-
-    def _pick(pv_field):
-        return ak.where(has_pvs, ak.flatten(pv_field[best_pv], axis=-1), zero)
-
-    tracks["min_ip"] = _pick(ip_all)
-    tracks["min_ip_chi2"] = _pick(ip_chi2_all)
+    tracks["min_ip"] = min_ip(tracks, dt=max_dt, dt_chi2=max_dt_chi2)
+    tracks["min_ip_chi2"] = min_ip_chi2(tracks, dt=max_dt, dt_chi2=max_dt_chi2)
+    tracks["n_pvs_considered"] = ak.sum(time_ok, axis=-1)
+    tracks["pv_on_time"] = ak.local_index(ip_all, axis=-1)[time_ok]
 
     # Best PV index (events, tracks) — -1 where no PVs
     bp = ak.flatten(best_pv, axis=-1)
     bp_safe = ak.fill_none(bp, 0)
-    tracks["best_pv_index"] = ak.where(has_pvs, bp_safe, -1)
+    tracks["best_pv_index"] = ak.where(has_selected_pv, bp_safe, -1)
 
     _write_best_pv_fields(
         tracks,
         pvs,
-        lambda f: ak.where(has_pvs, gather_jagged(pvs[f], bp_safe), zero),
+        lambda f: ak.where(
+            has_selected_pv, gather_jagged(pvs[f], bp_safe), zero
+        ),
     )
 
     # Store PV container reference for offline lookups
@@ -319,8 +487,8 @@ def vertex_fit_3d(comb):
     comb["vertex_cov_2_2"] = vc22
 
 
-def doca_2body(x, y, z, tx, ty):
-    """Batch distance of closest approach between two straight tracks."""
+def _doca_2body_geometry(x, y, z, tx, ty):
+    """Return the separation vector and track z positions at the two-track POCA."""
 
     norm0 = (1.0 + tx[:, 0] ** 2 + ty[:, 0] ** 2) ** 0.5
     norm1 = (1.0 + tx[:, 1] ** 2 + ty[:, 1] ** 2) ** 0.5
@@ -342,17 +510,53 @@ def doca_2body(x, y, z, tx, ty):
     # (derived from minimising |w + s*u0 - t*u1|^2)
     s, t, parallel = solve_2x2(a, -b, -b, c, -d, e)
 
+    # For parallel tracks, retain the previous convention: compare track 1's
+    # reference point with its closest point on track 0.
+    s = np.where(parallel, -d, s)
+    t = np.where(parallel, 0.0, t)
+
     diff_x = w0x + s * ux0 - t * ux1
     diff_y = w0y + s * uy0 - t * uy1
     diff_z = w0z + s * uz0 - t * uz1
-    doca_np = (diff_x**2 + diff_y**2 + diff_z**2) ** 0.5
+    poca_z0 = z[:, 0] + s * uz0
+    poca_z1 = z[:, 1] + t * uz1
+    return diff_x, diff_y, diff_z, poca_z0, poca_z1
 
-    par_x = w0x - d * ux0
-    par_y = w0y - d * uy0
-    par_z = w0z - d * uz0
-    doca_par = (par_x**2 + par_y**2 + par_z**2) ** 0.5
 
-    return np.where(parallel, doca_par, doca_np)
+def doca_2body(x, y, z, tx, ty):
+    """Batch distance of closest approach between two straight tracks."""
+    diff_x, diff_y, diff_z, _, _ = _doca_2body_geometry(x, y, z, tx, ty)
+    return np.sqrt(diff_x**2 + diff_y**2 + diff_z**2)
+
+
+def _propagate_track_xy_covariance(cov, dz):
+    """Propagate the (x, y) covariance block of a 5D state linearly in z."""
+    # State order is (x, y, tx, ty, q/p).  With straight-line transport,
+    # x' = x + tx*dz and y' = y + ty*dz; q/p has no position derivative.
+    var_x = cov["cov_0_0"] + 2.0 * dz * cov["cov_2_0"] + dz**2 * cov["cov_2_2"]
+    var_y = cov["cov_1_1"] + 2.0 * dz * cov["cov_3_1"] + dz**2 * cov["cov_3_3"]
+    cov_xy = (
+        cov["cov_1_0"]
+        + dz * (cov["cov_3_0"] + cov["cov_2_1"])
+        + dz**2 * cov["cov_3_2"]
+    )
+    return var_x, cov_xy, var_y
+
+
+def doca_chi2_2body(x, y, z, tx, ty, cov):
+    """Two-track DOCA chi2 using covariances propagated to the POCA points."""
+    diff_x, diff_y, _, poca_z0, poca_z1 = _doca_2body_geometry(x, y, z, tx, ty)
+    c0 = {key: value[:, 0] for key, value in cov.items()}
+    c1 = {key: value[:, 1] for key, value in cov.items()}
+    c0_xx, c0_xy, c0_yy = _propagate_track_xy_covariance(c0, poca_z0 - z[:, 0])
+    c1_xx, c1_xy, c1_yy = _propagate_track_xy_covariance(c1, poca_z1 - z[:, 1])
+    return mahalanobis_2x2(
+        diff_x,
+        diff_y,
+        c0_xx + c1_xx,
+        c0_xy + c1_xy,
+        c0_yy + c1_yy,
+    )
 
 
 def doca_nbody(x, y, z, tx, ty, n_body):
@@ -373,7 +577,7 @@ def doca_nbody(x, y, z, tx, ty, n_body):
 
 
 def compute_doca(comb):
-    """Compute pairwise DOCAs and write doca{i}{j}, max_doca, min_doca into comb."""
+    """Compute pairwise DOCA distances and chi2 values."""
     n_body = n_daughters(comb)
 
     x = gather_daughters_stack(comb, "x")
@@ -382,17 +586,50 @@ def compute_doca(comb):
     tx = gather_daughters_stack(comb, "tx")
     ty = gather_daughters_stack(comb, "ty")
 
+    cov_keys = (
+        "cov_0_0",
+        "cov_1_0",
+        "cov_1_1",
+        "cov_2_0",
+        "cov_2_1",
+        "cov_2_2",
+        "cov_3_0",
+        "cov_3_1",
+        "cov_3_2",
+        "cov_3_3",
+    )
+    cov = {key: gather_daughters_stack(comb, key) for key in cov_keys}
+
     if n_body == 2:
         doca_vals = {"doca12": doca_2body(x, y, z, tx, ty)}
+        doca_chi2_vals = {"doca12_chi2": doca_chi2_2body(x, y, z, tx, ty, cov)}
     else:
         doca_vals = doca_nbody(x, y, z, tx, ty, n_body)
+        doca_chi2_vals = {}
+        for i in range(n_body):
+            for j in range(i + 1, n_body):
+                pair = lambda a: np.stack([a[:, i], a[:, j]], axis=1)
+                pair_cov = {key: pair(value) for key, value in cov.items()}
+                doca_chi2_vals[f"doca{i + 1}{j + 1}_chi2"] = doca_chi2_2body(
+                    pair(x),
+                    pair(y),
+                    pair(z),
+                    pair(tx),
+                    pair(ty),
+                    pair_cov,
+                )
 
     for dk, dv in doca_vals.items():
+        comb[dk] = dv
+    for dk, dv in doca_chi2_vals.items():
         comb[dk] = dv
 
     all_doca = np.column_stack(list(doca_vals.values()))
     comb["max_doca"] = np.max(all_doca, axis=1)
     comb["min_doca"] = np.min(all_doca, axis=1)
+    all_doca_chi2 = np.column_stack(list(doca_chi2_vals.values()))
+    comb["max_doca_chi2"] = np.max(all_doca_chi2, axis=1)
+    comb["min_doca_chi2"] = np.min(all_doca_chi2, axis=1)
 
 
 def compute_composite_covariance(comb):
@@ -722,6 +959,8 @@ def compute_composite_pv_pairs(comb, pvs):
             result["time_residual"] = empty
             result["time_chi2"] = empty
             result["flight_time"] = empty
+            result["dt"] = empty
+            result["dt_chi2"] = empty
         return result
 
     # Vertex position and covariance elements
@@ -817,6 +1056,8 @@ def compute_composite_pv_pairs(comb, pvs):
         result["time_residual"] = ak.unflatten(t_res_flat, inner_counts)
         result["time_chi2"] = ak.unflatten(t_chi2_flat, inner_counts)
         result["flight_time"] = ak.unflatten(ft_flat, inner_counts)
+        result["dt"] = result["time_residual"]
+        result["dt_chi2"] = result["time_chi2"]
 
     return result
 
@@ -885,13 +1126,25 @@ def compute_composite_mcor(comb):
 def composite_pv_association(
     comb,
     pvs,
-    max_time_residual=0.05,
+    max_dt=None,
+    max_dt_chi2=None,
+    *,
+    max_time_residual=None,
     max_time_chi2=None,
 ):
-    """Best-PV association for composites (min IP, optional time filter)."""
+    """Associate a fitted composite to its minimum-IP eligible PV."""
+    if max_time_residual is not None:
+        if max_dt is not None:
+            raise ValueError("specify max_dt or max_time_residual, not both")
+        max_dt = max_time_residual
+    if max_time_chi2 is not None:
+        if max_dt_chi2 is not None:
+            raise ValueError("specify max_dt_chi2 or max_time_chi2, not both")
+        max_dt_chi2 = max_time_chi2
     if len(comb["vertex_x"]) == 0:
         return
     pairs = compute_composite_pv_pairs(comb, pvs)
+    _store_pv_pairs(comb, pairs)
     if ak.sum(ak.num(pairs["ip"], axis=-1)) == 0:
         return
 
@@ -902,40 +1155,38 @@ def composite_pv_association(
     pv_offsets = pairs["pv_offsets"]
 
     has_pvs = ak.num(ip_jag, axis=-1) > 0
-    zero = has_pvs * 0.0
-
-    # Time filter (only when time info exists)
-    ip_sel = ak.copy(ip_jag)
-    if has_time:
-        t_res_jag = pairs["time_residual"]
-        t_chi2_jag = pairs["time_chi2"]
-        if max_time_residual is not None:
-            tok = np.abs(t_res_jag) <= max_time_residual
-            any_pass = ak.any(tok, axis=-1)
-            ip_sel = ak.where(tok, ip_sel, np.inf)
-            ip_sel = ak.where(any_pass, ip_sel, ip_jag)
-        if max_time_chi2 is not None:
-            tcok = t_chi2_jag <= max_time_chi2
-            any_pass2 = ak.any(tcok, axis=-1)
-            ip_sel = ak.where(tcok, ip_sel, np.inf)
-            ip_sel = ak.where(any_pass2, ip_sel, ip_jag)
+    time_ok = _timing_mask(pairs, max_dt, max_dt_chi2)
+    pv_indices = ak.local_index(ip_jag, axis=-1)
+    has_selected_pv = has_pvs & ak.any(time_ok, axis=-1)
+    ip_sel = ak.where(time_ok, ip_jag, np.inf)
 
     best_pv = ak.argmin(ip_sel, axis=-1, keepdims=True)
 
     def _pick(jag):
         return ak.to_numpy(
-            ak.where(has_pvs, ak.flatten(jag[best_pv], axis=-1), zero)
+            ak.where(
+                has_selected_pv,
+                ak.flatten(jag[best_pv], axis=-1),
+                np.nan,
+            )
         )
 
-    comb["composite_ip"] = _pick(ip_jag)
-    comb["composite_ip_chi2"] = _pick(pairs["ip_chi2"])
+    comb["composite_ip"] = ak.to_numpy(
+        min_ip(comb, dt=max_dt, dt_chi2=max_dt_chi2)
+    )
+    comb["composite_ip_chi2"] = ak.to_numpy(
+        min_ip_chi2(comb, dt=max_dt, dt_chi2=max_dt_chi2)
+    )
+    comb["n_pvs_considered"] = ak.to_numpy(ak.sum(time_ok, axis=-1))
+    comb["pv_on_time"] = pv_indices[time_ok]
 
     bp = ak.flatten(best_pv, axis=-1)
     bp_safe = ak.fill_none(bp, 0)
     bp_np = ak.to_numpy(bp_safe)
-    comb["best_pv_index"] = ak.to_numpy(ak.where(has_pvs, bp_safe, 0)).astype(
-        float
-    )
+    has_selected_np = ak.to_numpy(has_selected_pv)
+    comb["best_pv_index"] = ak.to_numpy(
+        ak.where(has_selected_pv, bp_safe, -1)
+    ).astype(np.int64)
 
     if has_time:
         comb["time_residual"] = _pick(pairs["time_residual"])
@@ -943,14 +1194,13 @@ def composite_pv_association(
         comb["flight_time"] = _pick(pairs["flight_time"])
 
     # Best PV fields — use global PV index
-    has_pvs_np = ak.to_numpy(has_pvs)
     best_pv_global = pv_offsets[evt_per_cand] + bp_np
 
     _write_best_pv_fields(
         comb,
         pvs,
         lambda f: np.where(
-            has_pvs_np, _flatten_field(pvs, f)[best_pv_global], 0.0
+            has_selected_np, _flatten_field(pvs, f)[best_pv_global], 0.0
         ),
     )
 
@@ -959,6 +1209,8 @@ def composite_pv_association(
     compute_composite_fdchi2(comb)
     compute_composite_flight_eta(comb)
     compute_composite_mcor(comb)
+    for field in ("dira", "fdchi2", "flight_eta", "mcor"):
+        comb[field] = np.where(has_selected_np, comb[field], np.nan)
 
 
 def fit_track_t0(tracks):
